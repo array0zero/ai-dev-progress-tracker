@@ -4,6 +4,72 @@ import type { Db } from './connection.js'
 export type GenerationRunMode = 'generation' | 'recovery'
 export type GenerationRunTrigger = 'post_commit' | 'registration' | 'manual_recovery'
 
+export interface CommitRecord {
+  projectId: string
+  sha: string
+  parentSha: string | null
+  message: string
+  authoredAt: string
+  detectedAt: string
+}
+
+interface CommitRow {
+  project_id: string
+  sha: string
+  parent_sha: string | null
+  message: string
+  authored_at: string
+  detected_at: string
+}
+
+function rowToCommit(row: CommitRow): CommitRecord {
+  return {
+    projectId: row.project_id,
+    sha: row.sha,
+    parentSha: row.parent_sha,
+    message: row.message,
+    authoredAt: row.authored_at,
+    detectedAt: row.detected_at,
+  }
+}
+
+/** 同一 (project_id, sha) は detected_at を保ったまま metadata を更新する。 */
+export function upsertCommit(db: Db, commit: CommitRecord): void {
+  db.prepare(
+    `INSERT INTO commits (project_id, sha, parent_sha, message, authored_at, detected_at)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(project_id, sha)
+       DO UPDATE SET parent_sha = excluded.parent_sha,
+                     message = excluded.message,
+                     authored_at = excluded.authored_at`,
+  ).run(
+    commit.projectId,
+    commit.sha,
+    commit.parentSha,
+    commit.message,
+    commit.authoredAt,
+    commit.detectedAt,
+  )
+}
+
+export function getCommitRecord(db: Db, projectId: string, sha: string): CommitRecord | null {
+  const row = db
+    .prepare(
+      'SELECT project_id, sha, parent_sha, message, authored_at, detected_at FROM commits WHERE project_id = ? AND sha = ?',
+    )
+    .get(projectId, sha) as CommitRow | undefined
+  return row === undefined ? null : rowToCommit(row)
+}
+
+export function getLatestCommit(db: Db, projectId: string): CommitRecord | null {
+  const row = db
+    .prepare(
+      'SELECT project_id, sha, parent_sha, message, authored_at, detected_at FROM commits WHERE project_id = ? ORDER BY detected_at DESC, sha DESC LIMIT 1',
+    )
+    .get(projectId) as CommitRow | undefined
+  return row === undefined ? null : rowToCommit(row)
+}
+
 export interface GenerationRunRecord {
   id: string
   dedupeKey: string

@@ -1,5 +1,6 @@
 import { buildApp } from './app.js'
 import { checkVersion, loadConfig, VERSION_REQUIREMENTS } from './config.js'
+import { openDatabase } from './db/connection.js'
 import { createLogger } from './logging.js'
 
 async function main(): Promise<void> {
@@ -19,7 +20,8 @@ async function main(): Promise<void> {
     return
   }
 
-  const app = await buildApp({ config })
+  const db = openDatabase(config.dbPath)
+  const app = await buildApp({ config, db })
   await app.listen({ host: config.host, port: config.port })
   logger.info('server listening', { host: config.host, port: config.port })
 }
