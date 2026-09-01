@@ -73,15 +73,29 @@ const KEY_VALUE_PATTERN = new RegExp(
   'gi',
 )
 
-/** high-confidence な秘密情報パターンを [REDACTED] へ置換した文字列を返す。 */
+// 既に redaction 済みの値を再マッチしないためのガード。
+// value 側の量指定子は空白を跨げるため、直後に非空白が続くと `[REDACTED]` を含む
+// 区間ごと再置換してしまい redaction が非冪等になる。先頭が marker なら据え置く。
+function redactValue(prefix: string, value: string): string {
+  return value.startsWith(REDACTED) ? `${prefix}${value}` : `${prefix}${REDACTED}`
+}
+
+/**
+ * high-confidence な秘密情報パターンを [REDACTED] へ置換した文字列を返す。
+ * 冪等: redact(redact(x)) === redact(x)。
+ */
 export function redactHighConfidenceSecrets(text: string): string {
   let output = text
   for (const pattern of HIGH_CONFIDENCE_PATTERNS) {
     output = output.replace(pattern, REDACTED)
   }
   output = output.replace(URL_CREDENTIAL_PATTERN, `$1${REDACTED}@`)
-  output = output.replace(URL_QUERY_SECRET_PATTERN, `$1${REDACTED}`)
-  output = output.replace(KEY_VALUE_PATTERN, `$1$2${REDACTED}`)
+  output = output.replace(URL_QUERY_SECRET_PATTERN, (_match, prefix: string, value: string) =>
+    redactValue(prefix, value),
+  )
+  output = output.replace(KEY_VALUE_PATTERN, (_match, name: string, sep: string, value: string) =>
+    redactValue(`${name}${sep}`, value),
+  )
   return output
 }
 

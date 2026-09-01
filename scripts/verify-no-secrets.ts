@@ -139,10 +139,10 @@ async function build(
   writeFileSync(join(repo, 'README.md'), '# widget\n')
   git('add', '.')
   git('commit', '-m', 'initial commit')
-  // sentinel は commit message ではなく patch 到達コンテンツへ置く。
+  // sentinel を commit message と patch 到達コンテンツの両方へ置く。
   writeFileSync(join(repo, 'config.env'), `${Object.values(SENTINELS).join('\n')}\n`)
   git('add', '.')
-  git('commit', '-m', 'add config.env for rotation')
+  git('commit', '-m', `add config.env for rotation ${SENTINELS.githubToken}`)
 
   const db = openDatabase(join(dataDir, 'tracker.db'))
   const logger = createLogger(join(dataDir, 'logs', 'app.log'))

@@ -51,6 +51,27 @@ describe('redactHighConfidenceSecrets', () => {
     expect(redactHighConfidenceSecrets(benign)).toBe(benign)
     expect(containsHighConfidenceSecret(benign)).toBe(false)
   })
+
+  it('is idempotent: redacting already-redacted text is a no-op', () => {
+    for (const [, sentinel] of SENTINELS) {
+      const once = redactHighConfidenceSecrets(`lead ${sentinel} tail`)
+      expect(redactHighConfidenceSecrets(once)).toBe(once)
+      expect(containsHighConfidenceSecret(once)).toBe(false)
+    }
+  })
+
+  it('does not re-fire when [REDACTED] is followed by non-whitespace (serialized JSON)', () => {
+    // 生テキストでは改行が量指定子を止めるが、JSON 直列化後は "\n" が
+    // エスケープされ非空白になる。この形でも再マッチしてはならない。
+    const raw = 'password=hunter2secret\ntoken=another-secret-value'
+    const redacted = redactHighConfidenceSecrets(raw)
+    expect(redacted).not.toContain('hunter2secret')
+    expect(redacted).not.toContain('another-secret-value')
+
+    const serialized = JSON.stringify({ body: redacted })
+    expect(redactHighConfidenceSecrets(serialized)).toBe(serialized)
+    expect(containsHighConfidenceSecret(serialized)).toBe(false)
+  })
 })
 
 describe('evidence + run_evidence repository', () => {

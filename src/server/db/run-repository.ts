@@ -1,4 +1,5 @@
 import type { GenerationRunStatus } from '../../shared/domain.js'
+import { redactHighConfidenceSecrets } from '../security/redaction.js'
 import type { Db } from './connection.js'
 
 export type GenerationRunMode = 'generation' | 'recovery'
@@ -33,7 +34,11 @@ function rowToCommit(row: CommitRow): CommitRecord {
   }
 }
 
-/** 同一 (project_id, sha) は detected_at を保ったまま metadata を更新する。 */
+/**
+ * 同一 (project_id, sha) は detected_at を保ったまま metadata を更新する。
+ * 不変条件: commit message は DB 保存前に必ず secret scanner を通す
+ * (DESIGN「秘密情報の扱い」)。commit を永続化する経路は全てここを通る。
+ */
 export function upsertCommit(db: Db, commit: CommitRecord): void {
   db.prepare(
     `INSERT INTO commits (project_id, sha, parent_sha, message, authored_at, detected_at)
@@ -46,7 +51,7 @@ export function upsertCommit(db: Db, commit: CommitRecord): void {
     commit.projectId,
     commit.sha,
     commit.parentSha,
-    commit.message,
+    redactHighConfidenceSecrets(commit.message),
     commit.authoredAt,
     commit.detectedAt,
   )

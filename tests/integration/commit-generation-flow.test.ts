@@ -13,6 +13,7 @@ import {
   listRunEvidencePayloads,
 } from '../../src/server/db/progress-repository.js'
 import {
+  getCommitRecord,
   getRunById,
   listRunsByProject,
   markRunTerminal,
@@ -359,6 +360,24 @@ describe('commit generation flow', () => {
     expect(run?.status).toBe('failed')
     expect(run?.errorCode).toBe('WORKER_SPAWN_FAILED')
     expect(getLease(ctx.db, generationScope(projectId))).toBeNull()
+  })
+
+  it('redacts a secret in the commit message before persisting it (hook-commit path)', async () => {
+    const projectId = await registerTempProject(ctx.db, repo, 'acme/widget')
+    const token = 'ghp_0123456789abcdefghijABCDEFGHIJKL'
+    writeFileSync(join(repo.root, 'CHANGE.md'), '# change\n')
+    repo.git('add', '.')
+    repo.git('commit', '-m', `wire up deploy key ${token}`)
+    const headSha = repo.git('rev-parse', 'HEAD')
+
+    await runHookCommit(
+      { projectId, repo: repo.root, sha: headSha },
+      { db: ctx.db, spawnWorker: () => undefined },
+    )
+
+    const stored = getCommitRecord(ctx.db, projectId, headSha)
+    expect(stored?.message).not.toContain(token)
+    expect(stored?.message).toContain('[REDACTED]')
   })
 
   it('builds an evidence bundle from the single project repo only, capped and redacted', async () => {

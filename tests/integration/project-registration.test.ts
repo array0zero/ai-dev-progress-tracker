@@ -75,6 +75,25 @@ describe('project registration', () => {
     )
   })
 
+  it('redacts a secret in the HEAD commit message at registration', async () => {
+    const token = 'ghp_0123456789abcdefghijABCDEFGHIJKL'
+    repo.git('commit', '--allow-empty', '-m', `add deploy notes ${token}`)
+
+    const result = await registerProject(
+      { name: 'Widget', localPath: repo.root, repository: 'acme/widget' },
+      ctx.db,
+      { autoRecover: false, autoBackup: false },
+    )
+    expect(result.ok).toBe(true)
+    if (!result.ok) {
+      return
+    }
+
+    const commit = getLatestCommit(ctx.db, result.project.id)
+    expect(commit?.message).not.toContain(token)
+    expect(commit?.message).toContain('[REDACTED]')
+  })
+
   it('rejects when origin does not match the requested repository and stores nothing', async () => {
     const result = await registerProject(
       { name: 'X', localPath: repo.root, repository: 'evil/other' },
