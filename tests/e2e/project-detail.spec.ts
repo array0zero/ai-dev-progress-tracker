@@ -59,6 +59,36 @@ function seedEvidence(projectId: string, title: string, url: string | null): See
   }
 }
 
+function seedManyEvidence(projectId: string, count: number): string[] {
+  const db = openDatabase(DB_PATH)
+  try {
+    const ids: string[] = []
+    const insert = db.prepare(
+      `INSERT INTO evidence (id, project_id, kind, external_key, source_version, title, url, payload_json, captured_at)
+       VALUES (?, ?, 'commit', ?, ?, ?, ?, '{}', ?)`,
+    )
+    const seed = db.transaction(() => {
+      for (let i = 0; i < count; i += 1) {
+        const id = randomUUID()
+        ids.push(id)
+        insert.run(
+          id,
+          projectId,
+          `key-${i}`,
+          `${SHA}-${i}`,
+          `evidence subject ${i}`,
+          `https://github.com/seed/demo/commit/${i}`,
+          '2026-09-01T00:00:02.000Z',
+        )
+      }
+    })
+    seed()
+    return ids
+  } finally {
+    db.close()
+  }
+}
+
 function seedSnapshot(projectId: string, decisionEvidenceIds: string[]): void {
   const db = openDatabase(DB_PATH)
   try {
@@ -148,4 +178,25 @@ test('reports SNAPSHOT_INCONSISTENT and does not resolve evidence from another p
   await page.goto(`/projects/${projectA}`)
   await expect(page.getByRole('alert')).toContainText('SNAPSHOT_INCONSISTENT')
   await expect(page.locator('body')).not.toContainText('EVIDENCE_B_TITLE')
+})
+
+test('renders a project with 100 evidence items within 2 seconds', async ({ page, request }) => {
+  const projectId = seedProject('Detail Perf')
+  const evidenceIds = seedManyEvidence(projectId, 100)
+  seedSnapshot(projectId, evidenceIds)
+
+  const apiStart = Date.now()
+  const apiResponse = await request.get(`/api/projects/${projectId}`)
+  expect(apiResponse.status()).toBe(200)
+  const apiMs = Date.now() - apiStart
+
+  const renderStart = Date.now()
+  await page.goto(`/projects/${projectId}`, { waitUntil: 'load' })
+  const card = page.getByRole('article', { name: 'Detail Perf' })
+  await expect(card).toContainText('evidence subject 0')
+  await expect(card).toContainText('evidence subject 99')
+  const totalMs = Date.now() - renderStart
+
+  expect(apiMs).toBeLessThan(2000)
+  expect(totalMs).toBeLessThan(2000)
 })

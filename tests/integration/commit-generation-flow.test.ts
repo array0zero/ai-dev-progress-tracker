@@ -3,6 +3,8 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { runHookCommit } from '../../src/cli/commands/hook-commit.js'
 import { getCommit } from '../../src/server/adapters/git.js'
+import { buildApp } from '../../src/server/app.js'
+import { loadConfig } from '../../src/server/config.js'
 import type { Db } from '../../src/server/db/connection.js'
 import { getLease } from '../../src/server/db/lease-repository.js'
 import {
@@ -598,5 +600,99 @@ describe('commit generation flow', () => {
       trigger: 'post_commit',
     })
     expect(listRunsByProject(ctx.db, projectId).length).toBe(countAfterGeneration)
+  })
+
+  it('starts each of 10 sequential commit runs within 5s of detection', {
+    timeout: 60_000,
+  }, async () => {
+    const projectId = await registerTempProject(ctx.db, repo, 'acme/widget')
+    const scope = generationScope(projectId)
+    useFakeCodex({
+      output: {
+        schemaVersion: 1,
+        currentPosition: needsInputText,
+        completedItems: needsInputList,
+        nextActions: needsInputList,
+        importantDecisions: needsInputList,
+      },
+    })
+
+    let token = ''
+    for (let i = 0; i < 10; i += 1) {
+      writeFileSync(join(repo.root, `seq-${i}.txt`), `${i}\n`)
+      repo.git('add', '.')
+      repo.git('commit', '-m', `seq ${i}`)
+      const headSha = repo.git('rev-parse', 'HEAD')
+      await seedCommitFromRepo(ctx.db, projectId, repo, headSha)
+      const enqueued = enqueueGeneration(ctx.db, {
+        projectId,
+        sha: headSha,
+        mode: 'generation',
+        trigger: 'post_commit',
+      })
+      if (enqueued.ownerToken !== null) {
+        token = enqueued.ownerToken
+      }
+    }
+
+    await processGenerationQueue(ctx.db, scope, token, { maxIterations: 50 })
+
+    const runs = listRunsByProject(ctx.db, projectId)
+    expect(runs).toHaveLength(10)
+    for (const run of runs) {
+      expect(['queued', 'running']).not.toContain(run.status)
+      const started = getRunById(ctx.db, run.id)?.startedAt
+      expect(started).not.toBeNull()
+      const latencyMs = Date.parse(started ?? '') - Date.parse(run.detectedAt)
+      expect(latencyMs).toBeLessThanOrEqual(5000)
+    }
+  })
+
+  it('never marks a run succeeded for any of the three silent-failure shapes', {
+    timeout: 30_000,
+  }, async () => {
+    const projectId = await registerTempProject(ctx.db, repo, 'acme/widget')
+    const shapes: Array<Parameters<typeof createFakeCodex>[0]> = [
+      { execExitCode: 1 },
+      { outputRaw: '{ not json' },
+      {
+        output: {
+          schemaVersion: 1,
+          currentPosition: confirmedText('00000000-0000-0000-0000-000000000000'),
+          completedItems: needsInputList,
+          nextActions: needsInputList,
+          importantDecisions: needsInputList,
+        },
+      },
+    ]
+
+    const outcomes: string[] = []
+    for (const shape of shapes) {
+      const runId = await seedRunForHead(projectId)
+      const run = getRunById(ctx.db, runId)
+      if (run === null) {
+        throw new Error('run missing')
+      }
+      const codex = createFakeCodex(shape)
+      codexFakes.push(codex)
+      for (const [key, value] of Object.entries(codex.env)) {
+        vi.stubEnv(key, value)
+      }
+      await runGeneration(ctx.db, run)
+      outcomes.push(getRunById(ctx.db, runId)?.status ?? 'missing')
+      expect(getLatestSnapshotByProject(ctx.db, projectId)).toBeNull()
+    }
+
+    expect(outcomes).toEqual(['failed', 'failed', 'failed'])
+  })
+
+  it('starts and stops a server on the test data dir 10 times', { timeout: 30_000 }, async () => {
+    for (let i = 0; i < 10; i += 1) {
+      const app = await buildApp({ config: loadConfig({ TRACKER_DATA_DIR: '' }), db: ctx.db })
+      await app.listen({ host: '127.0.0.1', port: 0 })
+      const response = await app.inject({ method: 'GET', url: '/api/health' })
+      expect(response.statusCode).toBe(200)
+      await app.close()
+    }
   })
 })

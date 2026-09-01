@@ -1,0 +1,529 @@
+{
+  "cases": [
+    {
+      "id": "rec-01-issue-and-pr",
+      "expectedRecoveryStatus": "complete",
+      "evidence": [
+        {
+          "kind": "issue",
+          "externalKey": "101",
+          "title": "Implement project registration flow",
+          "body": "Register a local git project, verify origin matches, install hooks. Done: schema and route. Next: worker spawn. Decision: reject linked worktrees."
+        },
+        {
+          "kind": "pull_request",
+          "externalKey": "205",
+          "title": "Project registration route and service",
+          "body": "Adds POST /api/projects, installs post-commit and pre-push hooks, enqueues a recovery run. Remaining: dashboard card wiring."
+        }
+      ],
+      "expected": {
+        "currentPosition": {
+          "status": "confirmed",
+          "mustContain": ["registration"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["101"]
+        },
+        "completedItems": {
+          "status": "confirmed",
+          "mustContain": ["hook"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["205"]
+        },
+        "nextActions": {
+          "status": "confirmed",
+          "mustContain": ["worker"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["101"]
+        },
+        "importantDecisions": {
+          "status": "confirmed",
+          "mustContain": ["worktree"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["101"]
+        }
+      }
+    },
+    {
+      "id": "rec-02-generation-pipeline",
+      "expectedRecoveryStatus": "complete",
+      "evidence": [
+        {
+          "kind": "pull_request",
+          "externalKey": "210",
+          "title": "Generation pipeline: evidence bundle and Codex exec",
+          "body": "Collects commit, issues, PRs into a bundle; runs Codex; validates output against the JSON schema. Done: bundle + exec + validation. Next: persist snapshot and classify by confirmed count. Decision: ChatGPT auth only, no API key path."
+        }
+      ],
+      "expected": {
+        "currentPosition": {
+          "status": "confirmed",
+          "mustContain": ["generation"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["210"]
+        },
+        "completedItems": {
+          "status": "confirmed",
+          "mustContain": ["validation"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["210"]
+        },
+        "nextActions": {
+          "status": "confirmed",
+          "mustContain": ["snapshot"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["210"]
+        },
+        "importantDecisions": {
+          "status": "confirmed",
+          "mustContain": ["auth"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["210"]
+        }
+      }
+    },
+    {
+      "id": "rec-03-backup-restore",
+      "expectedRecoveryStatus": "complete",
+      "evidence": [
+        {
+          "kind": "issue",
+          "externalKey": "115",
+          "title": "Backup to a private GitHub repo on push",
+          "body": "Export six tables deterministically, push to <login>/ai-dev-progress-tracker-backup. Done: export + manifest. Next: restore --force flow. Decision: run the secret scanner before every push and abort on any hit."
+        },
+        {
+          "kind": "pull_request",
+          "externalKey": "220",
+          "title": "Backup export and manifest",
+          "body": "Writes data/backup-v1.json and manifest.json with a sha256 checksum and row counts."
+        }
+      ],
+      "expected": {
+        "currentPosition": {
+          "status": "confirmed",
+          "mustContain": ["backup"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["115"]
+        },
+        "completedItems": {
+          "status": "confirmed",
+          "mustContain": ["manifest"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["220"]
+        },
+        "nextActions": {
+          "status": "confirmed",
+          "mustContain": ["restore"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["115"]
+        },
+        "importantDecisions": {
+          "status": "confirmed",
+          "mustContain": ["scanner"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["115"]
+        }
+      }
+    },
+    {
+      "id": "rec-04-worker-lease",
+      "expectedRecoveryStatus": "complete",
+      "evidence": [
+        {
+          "kind": "pull_request",
+          "externalKey": "230",
+          "title": "Single-flight worker via SQLite lease",
+          "body": "enqueue acquires a scope lease in the same transaction; only the acquirer spawns a detached worker. Done: lease acquire/heartbeat/release. Next: stale lease reclaim after 180s. Decision: one lease per generation scope, one global backup scope."
+        }
+      ],
+      "expected": {
+        "currentPosition": {
+          "status": "confirmed",
+          "mustContain": ["lease"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["230"]
+        },
+        "completedItems": {
+          "status": "confirmed",
+          "mustContain": ["heartbeat"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["230"]
+        },
+        "nextActions": {
+          "status": "confirmed",
+          "mustContain": ["stale"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["230"]
+        },
+        "importantDecisions": {
+          "status": "confirmed",
+          "mustContain": ["scope"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["230"]
+        }
+      }
+    },
+    {
+      "id": "rec-05-dashboard",
+      "expectedRecoveryStatus": "complete",
+      "evidence": [
+        {
+          "kind": "issue",
+          "externalKey": "120",
+          "title": "Dashboard shows current position, done, next per project",
+          "body": "One card per project with three progress rows. Done: card layout and API. Next: system status banner for latest failures. Decision: no router library, read window.location.pathname."
+        }
+      ],
+      "expected": {
+        "currentPosition": {
+          "status": "confirmed",
+          "mustContain": ["dashboard"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["120"]
+        },
+        "completedItems": {
+          "status": "confirmed",
+          "mustContain": ["card"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["120"]
+        },
+        "nextActions": {
+          "status": "confirmed",
+          "mustContain": ["banner"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["120"]
+        },
+        "importantDecisions": {
+          "status": "confirmed",
+          "mustContain": ["router"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["120"]
+        }
+      }
+    },
+    {
+      "id": "rec-06-hooks",
+      "expectedRecoveryStatus": "complete",
+      "evidence": [
+        {
+          "kind": "pull_request",
+          "externalKey": "240",
+          "title": "Install post-commit and pre-push hooks with markers",
+          "body": "Hook blocks are delimited by begin/end markers keyed by project id. Done: install and idempotent reinstall. Next: uninstall on project delete. Decision: refuse to edit an existing hook without a shebang."
+        }
+      ],
+      "expected": {
+        "currentPosition": {
+          "status": "confirmed",
+          "mustContain": ["hook"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["240"]
+        },
+        "completedItems": {
+          "status": "confirmed",
+          "mustContain": ["marker"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["240"]
+        },
+        "nextActions": {
+          "status": "confirmed",
+          "mustContain": ["uninstall"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["240"]
+        },
+        "importantDecisions": {
+          "status": "confirmed",
+          "mustContain": ["shebang"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["240"]
+        }
+      }
+    },
+    {
+      "id": "rec-07-version-checks",
+      "expectedRecoveryStatus": "complete",
+      "evidence": [
+        {
+          "kind": "issue",
+          "externalKey": "125",
+          "title": "External CLI version gate",
+          "body": "doctor and server startup share one version comparator. Done: Node, git, gh, Codex checks. Next: surface failures in the dashboard. Decision: extract MAJOR.MINOR.PATCH and compare tuples, no semver dependency."
+        }
+      ],
+      "expected": {
+        "currentPosition": {
+          "status": "confirmed",
+          "mustContain": ["version"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["125"]
+        },
+        "completedItems": {
+          "status": "confirmed",
+          "mustContain": ["doctor"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["125"]
+        },
+        "nextActions": {
+          "status": "confirmed",
+          "mustContain": ["dashboard"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["125"]
+        },
+        "importantDecisions": {
+          "status": "confirmed",
+          "mustContain": ["semver"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["125"]
+        }
+      }
+    },
+    {
+      "id": "rec-08-evidence-redaction",
+      "expectedRecoveryStatus": "complete",
+      "evidence": [
+        {
+          "kind": "pull_request",
+          "externalKey": "250",
+          "title": "Redact high-confidence secrets in evidence before persistence",
+          "body": "Scan commit message and patch, issue and PR bodies. Done: GitHub, OpenAI, Anthropic, AWS, PEM, key-value patterns. Next: add a repo-wide verify:secrets script. Decision: bound every quantifier to avoid catastrophic backtracking."
+        }
+      ],
+      "expected": {
+        "currentPosition": {
+          "status": "confirmed",
+          "mustContain": ["redact"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["250"]
+        },
+        "completedItems": {
+          "status": "confirmed",
+          "mustContain": ["pattern"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["250"]
+        },
+        "nextActions": {
+          "status": "confirmed",
+          "mustContain": ["script"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["250"]
+        },
+        "importantDecisions": {
+          "status": "confirmed",
+          "mustContain": ["backtracking"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["250"]
+        }
+      }
+    },
+    {
+      "id": "rec-09-recovery-classifier",
+      "expectedRecoveryStatus": "complete",
+      "evidence": [
+        {
+          "kind": "issue",
+          "externalKey": "130",
+          "title": "Classify a run by confirmed field count",
+          "body": "Four confirmed fields is complete, one to three is partial, zero is unrecoverable. Done: classifier and mapping to run status. Next: reflect the newest commit only. Decision: never store a concrete value for a needs_input field."
+        }
+      ],
+      "expected": {
+        "currentPosition": {
+          "status": "confirmed",
+          "mustContain": ["classify"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["130"]
+        },
+        "completedItems": {
+          "status": "confirmed",
+          "mustContain": ["partial"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["130"]
+        },
+        "nextActions": {
+          "status": "confirmed",
+          "mustContain": ["commit"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["130"]
+        },
+        "importantDecisions": {
+          "status": "confirmed",
+          "mustContain": ["needs_input"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["130"]
+        }
+      }
+    },
+    {
+      "id": "rec-10-cli-doctor",
+      "expectedRecoveryStatus": "complete",
+      "evidence": [
+        {
+          "kind": "pull_request",
+          "externalKey": "260",
+          "title": "cli doctor command",
+          "body": "Checks Node, git, gh, Codex versions and Codex ChatGPT auth. Done: doctor output and exit codes. Next: document doctor in the README. Decision: doctor never calls gh auth token."
+        }
+      ],
+      "expected": {
+        "currentPosition": {
+          "status": "confirmed",
+          "mustContain": ["doctor"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["260"]
+        },
+        "completedItems": {
+          "status": "confirmed",
+          "mustContain": ["exit"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["260"]
+        },
+        "nextActions": {
+          "status": "confirmed",
+          "mustContain": ["readme"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["260"]
+        },
+        "importantDecisions": {
+          "status": "confirmed",
+          "mustContain": ["token"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["260"]
+        }
+      }
+    },
+    {
+      "id": "rec-11-insufficient-empty",
+      "expectedRecoveryStatus": "unrecoverable",
+      "evidence": [],
+      "expected": {
+        "currentPosition": {
+          "status": "needs_input",
+          "mustContain": [],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": []
+        },
+        "completedItems": {
+          "status": "needs_input",
+          "mustContain": [],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": []
+        },
+        "nextActions": {
+          "status": "needs_input",
+          "mustContain": [],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": []
+        },
+        "importantDecisions": {
+          "status": "needs_input",
+          "mustContain": [],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": []
+        }
+      }
+    },
+    {
+      "id": "rec-12-insufficient-title-only",
+      "expectedRecoveryStatus": "unrecoverable",
+      "evidence": [
+        { "kind": "issue", "externalKey": "301", "title": "Investigate flaky test", "body": "" }
+      ],
+      "expected": {
+        "currentPosition": {
+          "status": "needs_input",
+          "mustContain": [],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": []
+        },
+        "completedItems": {
+          "status": "needs_input",
+          "mustContain": [],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": []
+        },
+        "nextActions": {
+          "status": "needs_input",
+          "mustContain": [],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": []
+        },
+        "importantDecisions": {
+          "status": "needs_input",
+          "mustContain": [],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": []
+        }
+      }
+    },
+    {
+      "id": "rec-13-insufficient-unrelated",
+      "expectedRecoveryStatus": "unrecoverable",
+      "evidence": [
+        {
+          "kind": "pull_request",
+          "externalKey": "302",
+          "title": "Bump lockfile",
+          "body": "Routine dependency lockfile refresh. No behaviour change."
+        }
+      ],
+      "expected": {
+        "currentPosition": {
+          "status": "needs_input",
+          "mustContain": [],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": []
+        },
+        "completedItems": {
+          "status": "needs_input",
+          "mustContain": [],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": []
+        },
+        "nextActions": {
+          "status": "needs_input",
+          "mustContain": [],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": []
+        },
+        "importantDecisions": {
+          "status": "needs_input",
+          "mustContain": [],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": []
+        }
+      }
+    },
+    {
+      "id": "rec-14-insufficient-vague",
+      "expectedRecoveryStatus": "unrecoverable",
+      "evidence": [{ "kind": "issue", "externalKey": "303", "title": "wip", "body": "stuff" }],
+      "expected": {
+        "currentPosition": {
+          "status": "needs_input",
+          "mustContain": [],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": []
+        },
+        "completedItems": {
+          "status": "needs_input",
+          "mustContain": [],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": []
+        },
+        "nextActions": {
+          "status": "needs_input",
+          "mustContain": [],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": []
+        },
+        "importantDecisions": {
+          "status": "needs_input",
+          "mustContain": [],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": []
+        }
+      }
+    }
+  ]
+}

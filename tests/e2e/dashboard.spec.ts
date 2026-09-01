@@ -84,6 +84,61 @@ function seedProjectWithProgress(options: SeedProgressOptions): void {
   }
 }
 
+function seedManyProjects(count: number, snapshotsEach: number): void {
+  const db = openDatabase(DB_PATH)
+  try {
+    const needsInput = { status: 'needs_input', items: [], evidenceIds: [] }
+    const seed = db.transaction(() => {
+      for (let p = 0; p < count; p += 1) {
+        const projectId = randomUUID()
+        const sha = randomUUID().replace(/-/g, '') + randomUUID().replace(/-/g, '').slice(0, 8)
+        insertProject(db, {
+          id: projectId,
+          name: `Perf ${String(p).padStart(3, '0')}`,
+          localPath: `/perf/${projectId}`,
+          repoNodeId: `NODE_${projectId}`,
+          repoOwner: 'perf',
+          repoName: 'demo',
+          repoUrl: 'https://github.com/perf/demo',
+          defaultBranch: 'main',
+          status: 'active',
+        })
+        upsertCommit(db, {
+          projectId,
+          sha,
+          parentSha: null,
+          message: 'perf seed',
+          authoredAt: '2026-09-01T00:00:00.000Z',
+          detectedAt: '2026-09-01T00:00:01.000Z',
+        })
+        for (let s = 0; s < snapshotsEach; s += 1) {
+          const runId = randomUUID()
+          const ts = `2026-09-01T00:${String(s).padStart(2, '0')}:00.000Z`
+          db.prepare(
+            `INSERT INTO generation_runs (id, dedupe_key, project_id, commit_sha, mode, trigger, status, detected_at)
+             VALUES (?, ?, ?, ?, 'generation', 'post_commit', 'partial', ?)`,
+          ).run(runId, `generation:${projectId}:${sha}:${s}`, projectId, sha, ts)
+          markRunTerminal(db, runId, 'partial')
+          insertSnapshot(db, {
+            id: randomUUID(),
+            generationRunId: runId,
+            projectId,
+            commitSha: sha,
+            recoveryStatus: 'partial',
+            currentPosition: { status: 'needs_input', text: '要補完', evidenceIds: [] },
+            completedItems: needsInput,
+            nextActions: needsInput,
+            decisions: needsInput,
+          })
+        }
+      }
+    })
+    seed()
+  } finally {
+    db.close()
+  }
+}
+
 function seedRepo(slug: string): TempRepo {
   const repo = createTempRepo({ origin: `https://github.com/${slug}.git` })
   addRepoFixture(FIXTURES_PATH, slug, {
@@ -204,4 +259,21 @@ test('surfaces the latest generation failure in a dashboard banner', async ({ pa
   await page.goto('/')
   const banner = page.locator('.status-banner--warning', { hasText: '最新の生成失敗' })
   await expect(banner).toBeVisible()
+})
+
+test('renders 100 projects with 20 snapshots each within 2 seconds', async ({ page, request }) => {
+  seedManyProjects(100, 20)
+
+  const apiStart = Date.now()
+  const apiResponse = await request.get('/api/projects')
+  expect(apiResponse.status()).toBe(200)
+  const apiMs = Date.now() - apiStart
+
+  const renderStart = Date.now()
+  await page.goto('/', { waitUntil: 'load' })
+  await expect(page.locator('article[aria-label^="Perf "]')).toHaveCount(100)
+  const totalMs = Date.now() - renderStart
+
+  expect(apiMs).toBeLessThan(2000)
+  expect(totalMs).toBeLessThan(2000)
 })

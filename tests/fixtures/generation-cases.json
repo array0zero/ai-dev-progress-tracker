@@ -1,0 +1,364 @@
+{
+  "cases": [
+    {
+      "id": "gen-01-health-endpoint",
+      "commitMessage": "Add GET /api/health endpoint returning status ok",
+      "files": [
+        {
+          "path": "src/health.ts",
+          "content": "export function health() {\n  return { status: 'ok' }\n}\n"
+        }
+      ],
+      "expected": {
+        "currentPosition": {
+          "status": "confirmed",
+          "mustContain": ["health"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["<commit>"]
+        },
+        "completedItems": {
+          "status": "confirmed",
+          "mustContain": ["health"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["<commit>"]
+        },
+        "nextActions": {
+          "status": "needs_input",
+          "mustContain": [],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": []
+        },
+        "importantDecisions": {
+          "status": "needs_input",
+          "mustContain": [],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": []
+        }
+      }
+    },
+    {
+      "id": "gen-02-sqlite-schema",
+      "commitMessage": "Create projects table migration for the local SQLite store",
+      "files": [
+        {
+          "path": "migrations/001_projects.sql",
+          "content": "CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL);\n"
+        }
+      ],
+      "expected": {
+        "currentPosition": {
+          "status": "confirmed",
+          "mustContain": ["projects"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["<commit>"]
+        },
+        "completedItems": {
+          "status": "confirmed",
+          "mustContain": ["table"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["<commit>"]
+        },
+        "nextActions": {
+          "status": "needs_input",
+          "mustContain": [],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": []
+        },
+        "importantDecisions": {
+          "status": "needs_input",
+          "mustContain": [],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": []
+        }
+      }
+    },
+    {
+      "id": "gen-03-zod-validation",
+      "commitMessage": "Validate register-project request body with a Zod schema",
+      "files": [
+        {
+          "path": "src/schemas/project.ts",
+          "content": "import { z } from 'zod'\nexport const registerProjectSchema = z.object({ name: z.string().min(1) })\n"
+        }
+      ],
+      "expected": {
+        "currentPosition": {
+          "status": "confirmed",
+          "mustContain": ["zod"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["<commit>"]
+        },
+        "completedItems": {
+          "status": "confirmed",
+          "mustContain": ["schema"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["<commit>"]
+        },
+        "nextActions": {
+          "status": "needs_input",
+          "mustContain": [],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": []
+        },
+        "importantDecisions": {
+          "status": "needs_input",
+          "mustContain": [],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": []
+        }
+      }
+    },
+    {
+      "id": "gen-04-worker-lease",
+      "commitMessage": "Add worker_leases table and acquire a lease when enqueueing generation",
+      "files": [
+        {
+          "path": "src/server/db/lease-repository.ts",
+          "content": "export const LEASE_STALE_MS = 180000\nexport function acquireLease() {}\n"
+        }
+      ],
+      "expected": {
+        "currentPosition": {
+          "status": "confirmed",
+          "mustContain": ["lease"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["<commit>"]
+        },
+        "completedItems": {
+          "status": "confirmed",
+          "mustContain": ["lease"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["<commit>"]
+        },
+        "nextActions": {
+          "status": "needs_input",
+          "mustContain": [],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": []
+        },
+        "importantDecisions": {
+          "status": "needs_input",
+          "mustContain": [],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": []
+        }
+      }
+    },
+    {
+      "id": "gen-05-codex-adapter",
+      "commitMessage": "Add Codex CLI adapter that strips OPENAI_ env vars from the child process",
+      "files": [
+        {
+          "path": "src/server/adapters/codex.ts",
+          "content": "export async function runCodexGeneration(prompt: string) {\n  return { ok: false as const, code: 'NOT_IMPLEMENTED' }\n}\n"
+        }
+      ],
+      "expected": {
+        "currentPosition": {
+          "status": "confirmed",
+          "mustContain": ["codex"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["<commit>"]
+        },
+        "completedItems": {
+          "status": "confirmed",
+          "mustContain": ["adapter"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["<commit>"]
+        },
+        "nextActions": {
+          "status": "needs_input",
+          "mustContain": [],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": []
+        },
+        "importantDecisions": {
+          "status": "needs_input",
+          "mustContain": [],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": []
+        }
+      }
+    },
+    {
+      "id": "gen-06-dashboard-cards",
+      "commitMessage": "Render one dashboard card per project with the three progress rows",
+      "files": [
+        {
+          "path": "src/web/components/ProjectCard.tsx",
+          "content": "export function ProjectCard() {\n  return null\n}\n"
+        }
+      ],
+      "expected": {
+        "currentPosition": {
+          "status": "confirmed",
+          "mustContain": ["dashboard"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["<commit>"]
+        },
+        "completedItems": {
+          "status": "confirmed",
+          "mustContain": ["card"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["<commit>"]
+        },
+        "nextActions": {
+          "status": "needs_input",
+          "mustContain": [],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": []
+        },
+        "importantDecisions": {
+          "status": "needs_input",
+          "mustContain": [],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": []
+        }
+      }
+    },
+    {
+      "id": "gen-07-backup-export",
+      "commitMessage": "Export six tables to data/backup-v1.json in deterministic PK order",
+      "files": [
+        {
+          "path": "src/server/services/backup-service.ts",
+          "content": "export function exportBackupData() {\n  return { dataJson: '{}', counts: {} }\n}\n"
+        }
+      ],
+      "expected": {
+        "currentPosition": {
+          "status": "confirmed",
+          "mustContain": ["backup"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["<commit>"]
+        },
+        "completedItems": {
+          "status": "confirmed",
+          "mustContain": ["export"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["<commit>"]
+        },
+        "nextActions": {
+          "status": "needs_input",
+          "mustContain": [],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": []
+        },
+        "importantDecisions": {
+          "status": "needs_input",
+          "mustContain": [],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": []
+        }
+      }
+    },
+    {
+      "id": "gen-08-restore-force",
+      "commitMessage": "Add restore --force that moves the existing db aside before swapping",
+      "files": [
+        {
+          "path": "src/cli/commands/restore.ts",
+          "content": "export async function runRestore(args: { force: boolean }) {\n  return 0\n}\n"
+        }
+      ],
+      "expected": {
+        "currentPosition": {
+          "status": "confirmed",
+          "mustContain": ["restore"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["<commit>"]
+        },
+        "completedItems": {
+          "status": "confirmed",
+          "mustContain": ["force"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["<commit>"]
+        },
+        "nextActions": {
+          "status": "needs_input",
+          "mustContain": [],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": []
+        },
+        "importantDecisions": {
+          "status": "needs_input",
+          "mustContain": [],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": []
+        }
+      }
+    },
+    {
+      "id": "gen-09-host-hardening",
+      "commitMessage": "Reject non-localhost Host headers and external Origin mutations with 403",
+      "files": [
+        {
+          "path": "src/server/app.ts",
+          "content": "export const LOCAL_HOSTNAMES = new Set(['127.0.0.1', 'localhost', '::1'])\n"
+        }
+      ],
+      "expected": {
+        "currentPosition": {
+          "status": "confirmed",
+          "mustContain": ["host"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["<commit>"]
+        },
+        "completedItems": {
+          "status": "confirmed",
+          "mustContain": ["origin"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["<commit>"]
+        },
+        "nextActions": {
+          "status": "needs_input",
+          "mustContain": [],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": []
+        },
+        "importantDecisions": {
+          "status": "needs_input",
+          "mustContain": [],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": []
+        }
+      }
+    },
+    {
+      "id": "gen-10-secret-scanner",
+      "commitMessage": "Run the high-confidence secret scanner before persisting commit patches",
+      "files": [
+        {
+          "path": "src/server/security/redaction.ts",
+          "content": "export function containsHighConfidenceSecret(text: string) {\n  return false\n}\n"
+        }
+      ],
+      "expected": {
+        "currentPosition": {
+          "status": "confirmed",
+          "mustContain": ["secret"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["<commit>"]
+        },
+        "completedItems": {
+          "status": "confirmed",
+          "mustContain": ["scanner"],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": ["<commit>"]
+        },
+        "nextActions": {
+          "status": "needs_input",
+          "mustContain": [],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": []
+        },
+        "importantDecisions": {
+          "status": "needs_input",
+          "mustContain": [],
+          "mustNotContain": [],
+          "requiredEvidenceExternalKeys": []
+        }
+      }
+    }
+  ]
+}

@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { buildApp } from '../../src/server/app.js'
 import { loadConfig } from '../../src/server/config.js'
@@ -208,6 +210,43 @@ describe('recovery flow', () => {
       expect(missing.statusCode).toBe(404)
     } finally {
       await app.close()
+    }
+  })
+
+  it('ships a well-formed recovery fixture: 10 recoverable + 4 evidence-insufficient', () => {
+    const fixturePath = join(process.cwd(), 'tests/fixtures/recovery-cases.json')
+    const { cases } = JSON.parse(readFileSync(fixturePath, 'utf8')) as {
+      cases: Array<{
+        id: string
+        expectedRecoveryStatus: string
+        evidence: Array<{ externalKey: string }>
+        expected: Record<
+          string,
+          { status: string; mustContain: string[]; requiredEvidenceExternalKeys: string[] }
+        >
+      }>
+    }
+
+    expect(cases).toHaveLength(14)
+    expect(cases.filter((c) => c.expectedRecoveryStatus === 'unrecoverable')).toHaveLength(4)
+    expect(cases.filter((c) => c.expectedRecoveryStatus === 'complete')).toHaveLength(10)
+    expect(new Set(cases.map((c) => c.id)).size).toBe(14)
+
+    const fieldKeys = ['currentPosition', 'completedItems', 'nextActions', 'importantDecisions']
+    for (const testCase of cases) {
+      const evidenceKeys = new Set(testCase.evidence.map((e) => e.externalKey))
+      expect(Object.keys(testCase.expected).sort()).toEqual([...fieldKeys].sort())
+      for (const field of fieldKeys) {
+        const expectation = testCase.expected[field]
+        expect(['confirmed', 'needs_input']).toContain(expectation?.status)
+        // 参照必須の evidence key は必ずそのケースの evidence に存在する
+        for (const key of expectation?.requiredEvidenceExternalKeys ?? []) {
+          expect(evidenceKeys.has(key)).toBe(true)
+        }
+        if (testCase.expectedRecoveryStatus === 'unrecoverable') {
+          expect(expectation?.status).toBe('needs_input')
+        }
+      }
     }
   })
 })
