@@ -1,7 +1,12 @@
 import type { FastifyPluginAsync } from 'fastify'
-import type { ApiErrorBody, ProjectSummary } from '../../shared/api.js'
+import type { ApiErrorBody, DecisionView, ProjectDetail, ProjectSummary } from '../../shared/api.js'
 import type { Db } from '../db/connection.js'
-import { listProjects } from '../db/project-repository.js'
+import {
+  getLatestSnapshotByProject,
+  readSnapshotView,
+  resolveEvidence,
+} from '../db/progress-repository.js'
+import { getProjectById, listProjects, type ProjectRecord } from '../db/project-repository.js'
 import { getLatestCommit } from '../db/run-repository.js'
 import { registerProjectRequestSchema } from '../schemas/project.js'
 import { type RegisterProjectResult, registerProject } from '../services/project-service.js'
@@ -10,12 +15,8 @@ function errorBody(code: string, message: string): ApiErrorBody {
   return { error: { code, message } }
 }
 
-/**
- * dashboard 用の read model。最新 snapshot / generation / backup の join は
- * それらを作る T011 以降で追加する。現状は project + 最終反映 commit のみ。
- */
-function listProjectSummaries(db: Db): ProjectSummary[] {
-  return listProjects(db).map((project) => ({
+function baseSummary(db: Db, project: ProjectRecord): ProjectSummary {
+  return {
     id: project.id,
     name: project.name,
     repository: `${project.repoOwner}/${project.repoName}`,
@@ -27,12 +28,106 @@ function listProjectSummaries(db: Db): ProjectSummary[] {
     nextActions: [],
     generationStatus: null,
     backupStatus: null,
+  }
+}
+
+type DetailResult =
+  | { ok: true; detail: ProjectDetail }
+  | { ok: false; status: number; code: string; message: string }
+
+function buildProjectDetail(db: Db, projectId: string): DetailResult {
+  const project = getProjectById(db, projectId)
+  if (project === null) {
+    return { ok: false, status: 404, code: 'PROJECT_NOT_FOUND', message: 'Project not found.' }
+  }
+
+  const summary = baseSummary(db, project)
+  const emptyDetail: ProjectDetail = {
+    ...summary,
+    importantDecisions: [],
+    allEvidence: [],
+    missingFields: [],
+  }
+
+  const snapshot = getLatestSnapshotByProject(db, projectId)
+  if (snapshot === null) {
+    return { ok: true, detail: emptyDetail }
+  }
+
+  const view = readSnapshotView(snapshot)
+  if (view === null) {
+    return {
+      ok: false,
+      status: 422,
+      code: 'SNAPSHOT_INCONSISTENT',
+      message: 'The latest progress snapshot is not in the expected format.',
+    }
+  }
+
+  const { byId, missing } = resolveEvidence(db, projectId, view.evidenceIds)
+  if (missing.length > 0) {
+    return {
+      ok: false,
+      status: 422,
+      code: 'SNAPSHOT_INCONSISTENT',
+      message: `The latest snapshot references evidence that is not available: ${missing.join(', ')}`,
+    }
+  }
+
+  const missingFields: string[] = []
+  if (view.currentPosition.status === 'needs_input') {
+    missingFields.push('currentPosition')
+  }
+  if (view.completedItems.status === 'needs_input') {
+    missingFields.push('completedItems')
+  }
+  if (view.nextActions.status === 'needs_input') {
+    missingFields.push('nextActions')
+  }
+  if (view.importantDecisions.status === 'needs_input') {
+    missingFields.push('importantDecisions')
+  }
+
+  const decisions: DecisionView[] = view.importantDecisions.items.map((item) => ({
+    decision: item.decision,
+    rationale: item.rationale,
+    evidence: item.evidenceIds
+      .map((id) => byId.get(id))
+      .filter((ref): ref is NonNullable<typeof ref> => ref !== undefined),
   }))
+
+  const detail: ProjectDetail = {
+    ...summary,
+    progressStatus: view.recoveryStatus,
+    currentPosition:
+      view.currentPosition.status === 'needs_input' ? null : view.currentPosition.text,
+    completedItems:
+      view.completedItems.status === 'needs_input'
+        ? []
+        : view.completedItems.items.map((item) => item.text),
+    nextActions:
+      view.nextActions.status === 'needs_input'
+        ? []
+        : view.nextActions.items.map((item) => item.text),
+    importantDecisions: decisions,
+    allEvidence: [...byId.values()],
+    missingFields,
+  }
+  return { ok: true, detail }
 }
 
 export function projectRoutes(db: Db): FastifyPluginAsync {
   return async (app) => {
-    app.get('/projects', async () => listProjectSummaries(db))
+    app.get('/projects', async () => listProjects(db).map((project) => baseSummary(db, project)))
+
+    app.get('/projects/:id', async (request, reply) => {
+      const { id } = request.params as { id: string }
+      const result = buildProjectDetail(db, id)
+      if (!result.ok) {
+        return reply.code(result.status).send(errorBody(result.code, result.message))
+      }
+      return result.detail
+    })
 
     app.post('/projects', async (request, reply) => {
       const parsed = registerProjectRequestSchema.safeParse(request.body)

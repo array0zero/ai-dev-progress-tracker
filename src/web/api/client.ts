@@ -38,6 +38,14 @@ export async function fetchProjects(): Promise<ProjectSummary[]> {
   return (await response.json()) as ProjectSummary[]
 }
 
+export async function fetchProject(id: string): Promise<ProjectDetail> {
+  const response = await fetch(`/api/projects/${encodeURIComponent(id)}`)
+  if (!response.ok) {
+    throw await toApiError(response)
+  }
+  return (await response.json()) as ProjectDetail
+}
+
 export async function createProject(body: RegisterProjectRequestBody): Promise<ProjectDetail> {
   const response = await fetch('/api/projects', {
     method: 'POST',
