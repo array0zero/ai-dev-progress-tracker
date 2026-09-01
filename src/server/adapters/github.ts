@@ -113,7 +113,13 @@ function byUpdatedAtDesc(a: { updatedAt: string }, b: { updatedAt: string }): nu
   return 0
 }
 
-async function runGh(args: readonly string[]): Promise<RunResult | null> {
+const GH_READ_RETRY_DELAY_MS = 1_000
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function runGhOnce(args: readonly string[]): Promise<RunResult | null> {
   const gh = resolveGh()
   try {
     return await runProcess(gh.bin, [...gh.prefixArgs, ...args], { timeoutMs: GH_TIMEOUT_MS })
@@ -122,14 +128,24 @@ async function runGh(args: readonly string[]): Promise<RunResult | null> {
   }
 }
 
+/** DESIGN.md: gh read は 1 回・1 秒後に再試行する。 */
+async function runGhRead(args: readonly string[]): Promise<RunResult | null> {
+  const first = await runGhOnce(args)
+  if (first !== null && !first.timedOut && first.code === 0) {
+    return first
+  }
+  await sleep(GH_READ_RETRY_DELAY_MS)
+  return runGhOnce(args)
+}
+
 /** `gh auth status --active --hostname github.com` が exit 0 か。raw 出力は保持しない。 */
 export async function checkAuth(): Promise<boolean> {
-  const result = await runGh(['auth', 'status', '--active', '--hostname', 'github.com'])
+  const result = await runGhOnce(['auth', 'status', '--active', '--hostname', 'github.com'])
   return result !== null && !result.timedOut && result.code === 0
 }
 
 export async function viewRepo(slug: string): Promise<RepoViewResult> {
-  const result = await runGh([
+  const result = await runGhRead([
     'repo',
     'view',
     slug,
@@ -156,7 +172,7 @@ export async function viewRepo(slug: string): Promise<RepoViewResult> {
 }
 
 export async function listIssues(slug: string): Promise<IssueRecord[]> {
-  const result = await runGh([
+  const result = await runGhRead([
     'issue',
     'list',
     '-R',
@@ -189,7 +205,7 @@ export async function listIssues(slug: string): Promise<IssueRecord[]> {
 }
 
 export async function listPullRequests(slug: string): Promise<PullRequestRecord[]> {
-  const result = await runGh([
+  const result = await runGhRead([
     'pr',
     'list',
     '-R',

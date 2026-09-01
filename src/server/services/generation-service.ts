@@ -1,17 +1,29 @@
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
+import { getCommitShow } from '../adapters/git.js'
+import { listIssues, listPullRequests } from '../adapters/github.js'
 import type { Db } from '../db/connection.js'
 import { LEASE_STALE_MS, releaseLease } from '../db/lease-repository.js'
+import {
+  type EvidenceKind,
+  getLatestSnapshotByProject,
+  linkRunEvidence,
+  type NewEvidence,
+  upsertEvidence,
+} from '../db/progress-repository.js'
+import { getProjectById } from '../db/project-repository.js'
 import {
   failRunningGenerationRuns,
   findRunByDedupeKey,
   type GenerationRunMode,
   type GenerationRunRecord,
   type GenerationRunTrigger,
+  getCommitRecord,
   insertRun,
   markRunFailed,
 } from '../db/run-repository.js'
+import { redactHighConfidenceSecrets } from '../security/redaction.js'
 
 export interface EnqueueGenerationParams {
   projectId: string
@@ -140,11 +152,156 @@ export function startGenerationWorker(
   }
 }
 
+export interface EvidenceBundleItem {
+  id: string
+  kind: EvidenceKind
+  externalKey: string
+  sourceVersion: string
+  title: string
+  url: string | null
+  payload: unknown
+}
+
+export interface EvidenceBundle {
+  runId: string
+  commitSha: string
+  evidence: EvidenceBundleItem[]
+  /** 生成 context 用。evidence ID としては扱わない。 */
+  latestSnapshotContext: unknown
+}
+
+function firstLine(text: string): string {
+  const line = text.split('\n', 1)[0] ?? ''
+  return line.length > 200 ? line.slice(0, 200) : line
+}
+
 /**
- * generation 本体。T009 で evidence bundle 収集、T010 で Codex 実行、
- * T011 で snapshot 保存 / confirmed 数分類 を追加する。
- * 現状は Codex 未配線のため run を failed(CODEX_UNAVAILABLE) で終端する。
+ * DESIGN.md「evidence収集範囲」。対象 project の 1 リポジトリだけから
+ * commit / Issue(20) / PR(20) を集め、保存前に high-confidence scanner を通し、
+ * evidence を upsert して run_evidence へ紐付ける。最新 snapshot は context のみ。
+ */
+export async function collectEvidenceBundle(
+  db: Db,
+  run: GenerationRunRecord,
+  now: () => Date = () => new Date(),
+): Promise<EvidenceBundle> {
+  const project = getProjectById(db, run.projectId)
+  if (project === null) {
+    throw new Error(`project ${run.projectId} not found`)
+  }
+  const slug = `${project.repoOwner}/${project.repoName}`
+  const capturedAt = now().toISOString()
+
+  const drafts: Array<Omit<EvidenceBundleItem, 'id'>> = []
+
+  const commit = getCommitRecord(db, run.projectId, run.commitSha)
+  if (commit !== null) {
+    const show = await getCommitShow(project.localPath, run.commitSha)
+    // redaction は長さ切り詰めより前。getCommitShow の 120,000 上限適用後に scanner を通す。
+    const message = redactHighConfidenceSecrets(commit.message)
+    const patch = show === null ? '' : redactHighConfidenceSecrets(show.text)
+    drafts.push({
+      kind: 'commit',
+      externalKey: run.commitSha,
+      sourceVersion: run.commitSha,
+      title: firstLine(message),
+      url: null,
+      payload: {
+        sha: run.commitSha,
+        parentSha: commit.parentSha,
+        authoredAt: commit.authoredAt,
+        message,
+        patch,
+        truncated: show?.truncated ?? false,
+      },
+    })
+  }
+
+  for (const issue of await listIssues(slug)) {
+    const title = redactHighConfidenceSecrets(issue.title)
+    drafts.push({
+      kind: 'issue',
+      externalKey: String(issue.number),
+      sourceVersion: issue.updatedAt,
+      title,
+      url: issue.url,
+      payload: {
+        number: issue.number,
+        state: issue.state,
+        title,
+        body: redactHighConfidenceSecrets(issue.body),
+        updatedAt: issue.updatedAt,
+        labels: issue.labels,
+      },
+    })
+  }
+
+  for (const pr of await listPullRequests(slug)) {
+    const title = redactHighConfidenceSecrets(pr.title)
+    drafts.push({
+      kind: 'pull_request',
+      externalKey: String(pr.number),
+      sourceVersion: pr.updatedAt,
+      title,
+      url: pr.url,
+      payload: {
+        number: pr.number,
+        state: pr.state,
+        title,
+        body: redactHighConfidenceSecrets(pr.body),
+        updatedAt: pr.updatedAt,
+        mergedAt: pr.mergedAt,
+        headRefName: pr.headRefName,
+        baseRefName: pr.baseRefName,
+      },
+    })
+  }
+
+  const evidence: EvidenceBundleItem[] = drafts.map((draft) => {
+    const newEvidence: NewEvidence = {
+      projectId: run.projectId,
+      kind: draft.kind,
+      externalKey: draft.externalKey,
+      sourceVersion: draft.sourceVersion,
+      title: draft.title,
+      url: draft.url,
+      payload: draft.payload,
+      capturedAt,
+    }
+    return { ...draft, id: upsertEvidence(db, newEvidence) }
+  })
+
+  linkRunEvidence(
+    db,
+    run.id,
+    evidence.map((item) => item.id),
+  )
+
+  const latestSnapshot = getLatestSnapshotByProject(db, run.projectId)
+
+  return {
+    runId: run.id,
+    commitSha: run.commitSha,
+    evidence,
+    latestSnapshotContext:
+      latestSnapshot === null
+        ? null
+        : {
+            recoveryStatus: latestSnapshot.recoveryStatus,
+            currentPosition: latestSnapshot.currentPosition,
+            completedItems: latestSnapshot.completedItems,
+            nextActions: latestSnapshot.nextActions,
+            decisions: latestSnapshot.decisions,
+          },
+  }
+}
+
+/**
+ * generation 本体。T009 で evidence bundle 収集を実装。
+ * T010 で Codex 実行、T011 で snapshot 保存 / confirmed 数分類 を追加する。
+ * 現状は Codex 未配線のため bundle 収集後に failed(CODEX_UNAVAILABLE) で終端する。
  */
 export async function runGeneration(db: Db, run: GenerationRunRecord): Promise<void> {
+  await collectEvidenceBundle(db, run)
   markRunFailed(db, run.id, 'CODEX_UNAVAILABLE', 'Codex generation pipeline is not configured yet.')
 }

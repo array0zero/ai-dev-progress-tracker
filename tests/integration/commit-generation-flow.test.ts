@@ -2,15 +2,24 @@ import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { runHookCommit } from '../../src/cli/commands/hook-commit.js'
+import { getCommit } from '../../src/server/adapters/git.js'
 import type { Db } from '../../src/server/db/connection.js'
 import { getLease } from '../../src/server/db/lease-repository.js'
+import {
+  countRunEvidence,
+  listRunEvidencePayloads,
+} from '../../src/server/db/progress-repository.js'
 import {
   getRunById,
   listRunsByProject,
   markRunTerminal,
   upsertCommit,
 } from '../../src/server/db/run-repository.js'
-import { enqueueGeneration, generationScope } from '../../src/server/services/generation-service.js'
+import {
+  collectEvidenceBundle,
+  enqueueGeneration,
+  generationScope,
+} from '../../src/server/services/generation-service.js'
 import { registerProject } from '../../src/server/services/project-service.js'
 import { processGenerationQueue } from '../../src/worker/generation-worker.js'
 import { createFakeGh, type FakeGh } from '../helpers/fake-gh.js'
@@ -50,6 +59,27 @@ function seedCommit(db: Db, projectId: string, sha: string, detectedAt: string):
   })
 }
 
+async function seedCommitFromRepo(
+  db: Db,
+  projectId: string,
+  repo: TempRepo,
+  sha: string,
+): Promise<void> {
+  const meta = await getCommit(repo.root, sha)
+  if (meta === null) {
+    throw new Error(`commit ${sha} not found`)
+  }
+  const iso = new Date().toISOString()
+  upsertCommit(db, {
+    projectId,
+    sha: meta.sha,
+    parentSha: meta.parentSha,
+    message: meta.message,
+    authoredAt: meta.authoredAt !== '' ? meta.authoredAt : iso,
+    detectedAt: iso,
+  })
+}
+
 describe('commit generation flow', () => {
   let ctx: TestDb
   let repo: TempRepo
@@ -61,8 +91,47 @@ describe('commit generation flow', () => {
     fake = createFakeGh({
       authStatusExitCode: 0,
       repos: {
-        'acme/widget': { repoView: repoView('NODE_ACME_WIDGET', 'acme/widget') },
-        'acme/other': { repoView: repoView('NODE_ACME_OTHER', 'acme/other') },
+        'acme/widget': {
+          repoView: repoView('NODE_ACME_WIDGET', 'acme/widget'),
+          issues: [
+            {
+              number: 11,
+              title: 'Widget issue',
+              state: 'OPEN',
+              body: 'issue body for widget',
+              updatedAt: '2026-08-01T00:00:00Z',
+              url: 'https://github.com/acme/widget/issues/11',
+              labels: [{ name: 'bug' }],
+            },
+          ],
+          pulls: [
+            {
+              number: 21,
+              title: 'Widget PR',
+              state: 'OPEN',
+              body: 'pr body for widget',
+              updatedAt: '2026-08-02T00:00:00Z',
+              mergedAt: null,
+              url: 'https://github.com/acme/widget/pull/21',
+              headRefName: 'feat',
+              baseRefName: 'main',
+            },
+          ],
+        },
+        'acme/other': {
+          repoView: repoView('NODE_ACME_OTHER', 'acme/other'),
+          issues: [
+            {
+              number: 99,
+              title: 'OTHER_REPO_LEAK',
+              state: 'OPEN',
+              body: 'should never appear in acme/widget bundle',
+              updatedAt: '2026-08-03T00:00:00Z',
+              url: 'https://github.com/acme/other/issues/99',
+              labels: [],
+            },
+          ],
+        },
       },
     })
     for (const [key, value] of Object.entries(fake.env)) {
@@ -243,5 +312,50 @@ describe('commit generation flow', () => {
     expect(run?.status).toBe('failed')
     expect(run?.errorCode).toBe('WORKER_SPAWN_FAILED')
     expect(getLease(ctx.db, generationScope(projectId))).toBeNull()
+  })
+
+  it('builds an evidence bundle from the single project repo only, capped and redacted', async () => {
+    const projectId = await registerTempProject(ctx.db, repo, 'acme/widget')
+
+    writeFileSync(join(repo.root, 'big.txt'), 'x'.repeat(200_000))
+    writeFileSync(
+      join(repo.root, 'notes.txt'),
+      'leaked key ghp_0123456789abcdefghijABCDEFGHIJKL end\n',
+    )
+    repo.git('add', '.')
+    repo.git('commit', '-m', 'add big file and a token ghp_0123456789abcdefghijABCDEFGHIJKL')
+    const headSha = repo.git('rev-parse', 'HEAD')
+    await seedCommitFromRepo(ctx.db, projectId, repo, headSha)
+
+    const enqueued = enqueueGeneration(ctx.db, {
+      projectId,
+      sha: headSha,
+      mode: 'generation',
+      trigger: 'post_commit',
+    })
+    const run = getRunById(ctx.db, enqueued.runId)
+    if (run === null) {
+      throw new Error('run missing')
+    }
+
+    const bundle = await collectEvidenceBundle(ctx.db, run)
+
+    const kinds = bundle.evidence.map((item) => item.kind).sort()
+    expect(kinds).toEqual(['commit', 'issue', 'pull_request'])
+    expect(countRunEvidence(ctx.db, run.id)).toBe(bundle.evidence.length)
+
+    const serialized = JSON.stringify(bundle.evidence)
+    expect(serialized).not.toContain('OTHER_REPO_LEAK')
+    expect(serialized).not.toContain('ghp_0123456789abcdefghijABCDEFGHIJKL')
+    expect(serialized).toContain('[REDACTED]')
+
+    const commitItem = bundle.evidence.find((item) => item.kind === 'commit')
+    const payload = commitItem?.payload as { patch: string; truncated: boolean }
+    expect(payload.patch.length).toBeLessThanOrEqual(120_000)
+    expect(payload.truncated).toBe(true)
+
+    const persisted = JSON.stringify(listRunEvidencePayloads(ctx.db, run.id))
+    expect(persisted).not.toContain('ghp_0123456789abcdefghijABCDEFGHIJKL')
+    expect(persisted).not.toContain('OTHER_REPO_LEAK')
   })
 })

@@ -40,3 +40,51 @@ export function redactSecrets(value: unknown): unknown {
   }
   return value
 }
+
+// --- high-confidence pattern scanner ---------------------------------------
+//
+// DESIGN.md「秘密情報の扱い」: DB へ保存する commit message / patch、Issue/PR の
+// title/body へ保存前に適用する。長さ切り詰めより前に実行すること。
+// 置換は型に関係なく [REDACTED]。
+
+const KV_SECRET_NAMES =
+  'password|passwd|token|access_token|refresh_token|api_key|apikey|secret|client_secret|access_key'
+
+// すべての可変長量指定子に上限を付け、長い連続文字列に対する
+// catastrophic backtracking を避ける。
+const HIGH_CONFIDENCE_PATTERNS: readonly RegExp[] = [
+  // GitHub classic / fine-grained token
+  /gh[pousr]_[A-Za-z0-9]{20,255}/g,
+  /github_pat_[A-Za-z0-9_]{20,255}/g,
+  // Anthropic-style key (sk-ant-) は OpenAI-style より先に処理する
+  /sk-ant-[A-Za-z0-9_-]{16,255}/g,
+  // OpenAI-style key
+  /sk-[A-Za-z0-9_-]{16,255}/g,
+  // AWS access key ID
+  /AKIA[0-9A-Z]{16}/g,
+  // PEM private key block
+  /-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY-----[\s\S]{0,8192}?-----END [A-Z0-9 ]{0,40}PRIVATE KEY-----/g,
+]
+
+const URL_CREDENTIAL_PATTERN = /\b([a-z][a-z0-9+.-]{1,15}:\/\/)[^/\s:@]{1,256}:[^/\s@]{1,256}@/gi
+const URL_QUERY_SECRET_PATTERN = new RegExp(`([?&](?:${KV_SECRET_NAMES})=)([^&\\s]{1,512})`, 'gi')
+const KEY_VALUE_PATTERN = new RegExp(
+  `\\b(${KV_SECRET_NAMES})\\b(["']?\\s{0,4}[:=]\\s{0,4}["']?)([^\\s"',;}&]{1,512})`,
+  'gi',
+)
+
+/** high-confidence な秘密情報パターンを [REDACTED] へ置換した文字列を返す。 */
+export function redactHighConfidenceSecrets(text: string): string {
+  let output = text
+  for (const pattern of HIGH_CONFIDENCE_PATTERNS) {
+    output = output.replace(pattern, REDACTED)
+  }
+  output = output.replace(URL_CREDENTIAL_PATTERN, `$1${REDACTED}@`)
+  output = output.replace(URL_QUERY_SECRET_PATTERN, `$1${REDACTED}`)
+  output = output.replace(KEY_VALUE_PATTERN, `$1$2${REDACTED}`)
+  return output
+}
+
+export function containsHighConfidenceSecret(text: string): boolean {
+  return redactHighConfidenceSecrets(text) !== text
+}

@@ -1,7 +1,10 @@
+import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import type { EvidenceRef } from '../../shared/api.js'
 import type { ProgressRecoveryStatus } from '../../shared/domain.js'
 import type { Db } from './connection.js'
+
+export type EvidenceKind = 'commit' | 'issue' | 'pull_request'
 
 export interface ProgressSnapshotRecord {
   id: string
@@ -234,4 +237,83 @@ export function resolveEvidence(db: Db, projectId: string, ids: string[]): Resol
     })
   }
   return { byId, missing: ids.filter((id) => !byId.has(id)) }
+}
+
+export interface NewEvidence {
+  projectId: string
+  kind: EvidenceKind
+  externalKey: string
+  sourceVersion: string
+  title: string
+  url: string | null
+  payload: unknown
+  capturedAt: string
+}
+
+/** (project_id, kind, external_key, source_version) 単位で upsert し、evidence ID を返す。 */
+export function upsertEvidence(db: Db, evidence: NewEvidence): string {
+  const upsert = db.transaction((): string => {
+    const existing = db
+      .prepare(
+        'SELECT id FROM evidence WHERE project_id = ? AND kind = ? AND external_key = ? AND source_version = ?',
+      )
+      .get(evidence.projectId, evidence.kind, evidence.externalKey, evidence.sourceVersion) as
+      | { id: string }
+      | undefined
+    const payloadJson = JSON.stringify(evidence.payload)
+    if (existing !== undefined) {
+      db.prepare(
+        'UPDATE evidence SET title = ?, url = ?, payload_json = ?, captured_at = ? WHERE id = ?',
+      ).run(evidence.title, evidence.url, payloadJson, evidence.capturedAt, existing.id)
+      return existing.id
+    }
+    const id = randomUUID()
+    db.prepare(
+      `INSERT INTO evidence (id, project_id, kind, external_key, source_version, title, url, payload_json, captured_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      id,
+      evidence.projectId,
+      evidence.kind,
+      evidence.externalKey,
+      evidence.sourceVersion,
+      evidence.title,
+      evidence.url,
+      payloadJson,
+      evidence.capturedAt,
+    )
+    return id
+  })
+  return upsert()
+}
+
+/** 当該 run で使う evidence だけを run_evidence へ紐付ける (重複は無視)。 */
+export function linkRunEvidence(db: Db, runId: string, evidenceIds: readonly string[]): void {
+  const insert = db.prepare(
+    'INSERT OR IGNORE INTO run_evidence (run_id, evidence_id) VALUES (?, ?)',
+  )
+  const link = db.transaction((ids: readonly string[]): void => {
+    for (const id of ids) {
+      insert.run(runId, id)
+    }
+  })
+  link(evidenceIds)
+}
+
+export function countRunEvidence(db: Db, runId: string): number {
+  const row = db
+    .prepare('SELECT COUNT(*) AS count FROM run_evidence WHERE run_id = ?')
+    .get(runId) as { count: number }
+  return row.count
+}
+
+export function listRunEvidencePayloads(db: Db, runId: string): unknown[] {
+  const rows = db
+    .prepare(
+      `SELECT e.payload_json AS payload_json FROM run_evidence re
+       JOIN evidence e ON e.id = re.evidence_id
+       WHERE re.run_id = ?`,
+    )
+    .all(runId) as Array<{ payload_json: string }>
+  return rows.map((row) => JSON.parse(row.payload_json))
 }

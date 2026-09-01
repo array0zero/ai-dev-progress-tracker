@@ -157,3 +157,32 @@ export async function getCommit(root: string, ref: string): Promise<CommitMetada
 export function getHeadCommit(root: string): Promise<CommitMetadata | null> {
   return getCommit(root, 'HEAD')
 }
+
+/** DESIGN.md: patch 本文は最大 120,000 文字。超過時は末尾を切り truncated を立てる。 */
+export const COMMIT_SHOW_MAX_CHARS = 120_000
+
+export interface CommitShow {
+  text: string
+  truncated: boolean
+}
+
+export async function getCommitShow(root: string, sha: string): Promise<CommitShow | null> {
+  const out = await git([
+    '-C',
+    root,
+    'show',
+    '--format=fuller',
+    '--stat',
+    '--patch',
+    '--no-ext-diff',
+    '--unified=3',
+    sha,
+  ])
+  if (out.code !== 0) {
+    return null
+  }
+  if (out.stdout.length > COMMIT_SHOW_MAX_CHARS) {
+    return { text: out.stdout.slice(0, COMMIT_SHOW_MAX_CHARS), truncated: true }
+  }
+  return { text: out.stdout, truncated: false }
+}
