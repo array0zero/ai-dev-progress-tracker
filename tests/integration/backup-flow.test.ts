@@ -169,6 +169,88 @@ describe('backup flow', () => {
     expect(calls).toContain('commitPush')
   })
 
+  it('performs the first backup against an empty backup repo without pulling', async () => {
+    const projectId = await register(ctx.db, { autoBackup: false })
+    const headSha = repo.git('rev-parse', 'HEAD')
+    const enq = enqueueBackup(ctx.db, {
+      trigger: 'pre_push',
+      projectId,
+      sourceCommitSha: headSha,
+      backupRepo: 'fake-user/ai-dev-progress-tracker-backup',
+    })
+    const run = getBackupRunById(ctx.db, enq.runId)
+    if (run === null) {
+      throw new Error('run missing')
+    }
+
+    // 空の backup repo を clone 済み: `.git` はあるが commit は無い (unborn HEAD)。
+    mkdirSync(join(cloneDir, '.git'), { recursive: true })
+    const calls: string[] = []
+    const deps: BackupGitDeps = {
+      clone: async () => {
+        calls.push('clone')
+        return true
+      },
+      pullFfOnly: async () => {
+        calls.push('pull')
+        return false // 空 repo からの pull は参照が無く失敗する
+      },
+      head: async () => null, // commit が無い
+      commitPush: async () => {
+        calls.push('commitPush')
+        return { ok: true, sha: 'FIRST_BACKUP_SHA' }
+      },
+    }
+
+    await runBackup(ctx.db, run, {
+      cloneDir,
+      settleTimeoutMs: 300,
+      settlePollMs: 20,
+      ensureRepo: OK_ENSURE,
+      git: deps,
+    })
+
+    const done = getBackupRunById(ctx.db, run.id)
+    expect(done?.status).toBe('succeeded')
+    expect(done?.backupCommitSha).toBe('FIRST_BACKUP_SHA')
+    expect(calls).not.toContain('pull') // unborn HEAD では pull しない
+    expect(calls).toContain('commitPush')
+  })
+
+  it('fails with BACKUP_PULL_FAILED when a non-empty clone cannot fast-forward', async () => {
+    const projectId = await register(ctx.db, { autoBackup: false })
+    const enq = enqueueBackup(ctx.db, {
+      trigger: 'pre_push',
+      projectId,
+      sourceCommitSha: repo.git('rev-parse', 'HEAD'),
+      backupRepo: 'fake-user/ai-dev-progress-tracker-backup',
+    })
+    const run = getBackupRunById(ctx.db, enq.runId)
+    if (run === null) {
+      throw new Error('run missing')
+    }
+
+    mkdirSync(join(cloneDir, '.git'), { recursive: true })
+    const deps: BackupGitDeps = {
+      clone: async () => true,
+      pullFfOnly: async () => false,
+      head: async () => 'EXISTING_SHA', // commit がある clone
+      commitPush: async () => ({ ok: true, sha: 'X' }),
+    }
+
+    await runBackup(ctx.db, run, {
+      cloneDir,
+      settleTimeoutMs: 300,
+      settlePollMs: 20,
+      ensureRepo: OK_ENSURE,
+      git: deps,
+    })
+
+    const done = getBackupRunById(ctx.db, run.id)
+    expect(done?.status).toBe('failed')
+    expect(done?.errorCode).toBe('BACKUP_PULL_FAILED')
+  })
+
   it('fails the run when the backup repo cannot be ensured', async () => {
     const projectId = await register(ctx.db, { autoBackup: false })
     const enq = enqueueBackup(ctx.db, {

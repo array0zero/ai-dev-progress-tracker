@@ -32,6 +32,8 @@ import { containsHighConfidenceSecret } from '../security/redaction.js'
 export const BACKUP_REPO_SUFFIX = 'ai-dev-progress-tracker-backup'
 export const BACKUP_SCOPE = 'backup'
 export const SETTLE_TIMEOUT_MS = 180_000
+/** DESIGN.md「バックアップ先」: default branch は `main` 固定。初回 push でこの branch を作る。 */
+export const BACKUP_BRANCH = 'main'
 
 function sha256Hex(text: string): string {
   return createHash('sha256').update(text, 'utf8').digest('hex')
@@ -270,6 +272,10 @@ const DEFAULT_GIT_DEPS: BackupGitDeps = {
     return r.ok ? r.stdout : null
   },
   commitPush: async (dir, message) => {
+    // 初回 backup では clone 先が空 repo 由来の unborn HEAD (branch 名は git の
+    // init.defaultBranch 依存)。DESIGN 固定の `main` へ寄せてから commit する。
+    // 既に `main` の場合は no-op。symbolic-ref は index / working tree を触らない。
+    await git(['-C', dir, 'symbolic-ref', 'HEAD', `refs/heads/${BACKUP_BRANCH}`])
     if (!(await git(['-C', dir, 'add', '-A'])).ok) {
       return { ok: false, sha: null }
     }
@@ -290,10 +296,11 @@ const DEFAULT_GIT_DEPS: BackupGitDeps = {
     ) {
       return { ok: false, sha: null }
     }
-    let pushed = (await git(['-C', dir, 'push'])).ok
+    // 初回 push で remote に `main` が無いため、明示 refspec + upstream 設定で push する。
+    let pushed = (await git(['-C', dir, 'push', '-u', 'origin', BACKUP_BRANCH])).ok
     if (!pushed) {
       await sleep(2_000)
-      pushed = (await git(['-C', dir, 'push'])).ok
+      pushed = (await git(['-C', dir, 'push', '-u', 'origin', BACKUP_BRANCH])).ok
     }
     const head = await git(['-C', dir, 'rev-parse', 'HEAD'])
     return { ok: pushed, sha: head.ok ? head.stdout : null }
@@ -377,7 +384,9 @@ export async function runBackup(
       fail('BACKUP_CLONE_FAILED', 'Could not clone the backup repository.')
       return
     }
-  } else if (!(await gitDeps.pullFfOnly(cloneDir))) {
+  } else if ((await gitDeps.head(cloneDir)) !== null && !(await gitDeps.pullFfOnly(cloneDir))) {
+    // commit の無い backup repo (初回) は unborn HEAD で fast-forward 対象が無いため
+    // pull しない。commit がある clone のみ pull し、失敗は致命とする。
     fail('BACKUP_PULL_FAILED', 'Could not fast-forward the backup clone.')
     return
   }
