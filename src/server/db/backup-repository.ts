@@ -101,3 +101,54 @@ export function getLatestBackupRun(db: Db): BackupRunRecord | null {
     .get() as BackupRunRow | undefined
   return row === undefined ? null : rowToBackupRun(row)
 }
+
+export function getLatestSuccessfulBackupRun(db: Db): BackupRunRecord | null {
+  const row = db
+    .prepare(
+      `SELECT ${SELECT_COLUMNS} FROM backup_runs WHERE status = 'succeeded'
+       ORDER BY queued_at DESC, id DESC LIMIT 1`,
+    )
+    .get() as BackupRunRow | undefined
+  return row === undefined ? null : rowToBackupRun(row)
+}
+
+export interface BackupTerminalUpdate {
+  backupCommitSha?: string | null
+  errorCode?: string | null
+  errorMessage?: string | null
+}
+
+export function markBackupRunTerminal(
+  db: Db,
+  id: string,
+  status: 'succeeded' | 'failed',
+  update: BackupTerminalUpdate = {},
+  now: Date = new Date(),
+): void {
+  db.prepare(
+    `UPDATE backup_runs
+       SET status = ?, backup_commit_sha = ?, error_code = ?, error_message = ?, finished_at = ?
+     WHERE id = ?`,
+  ).run(
+    status,
+    update.backupCommitSha ?? null,
+    update.errorCode ?? null,
+    update.errorMessage ?? null,
+    now.toISOString(),
+    id,
+  )
+}
+
+export function markBackupRunRunning(db: Db, id: string, now: Date = new Date()): void {
+  db.prepare("UPDATE backup_runs SET status = 'running', started_at = ? WHERE id = ?").run(
+    now.toISOString(),
+    id,
+  )
+}
+
+export function hasActiveBackupRun(db: Db): boolean {
+  return (
+    db.prepare("SELECT 1 FROM backup_runs WHERE status IN ('queued', 'running') LIMIT 1").get() !==
+    undefined
+  )
+}

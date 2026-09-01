@@ -144,6 +144,28 @@ export async function checkAuth(): Promise<boolean> {
   return result !== null && !result.timedOut && result.code === 0
 }
 
+/** active な gh login の user login (owner) を返す。token は取得しない。 */
+export async function getActiveLogin(): Promise<string | null> {
+  const result = await runGhRead(['api', 'user', '--jq', '.login'])
+  if (result === null || result.timedOut || result.code !== 0) {
+    return null
+  }
+  const login = result.stdout.trim()
+  return /^[A-Za-z0-9-]+$/.test(login) ? login : null
+}
+
+/** backup 用 Private repository を作成する。 */
+export async function createPrivateRepo(slug: string): Promise<boolean> {
+  const result = await runGhOnce(['repo', 'create', slug, '--private', '--disable-wiki'])
+  return result !== null && !result.timedOut && result.code === 0
+}
+
+/** `gh auth setup-git` を実行する (backup clone/push が gh 認証を使うため)。 */
+export async function ensureAuthSetupGit(): Promise<boolean> {
+  const result = await runGhOnce(['auth', 'setup-git'])
+  return result !== null && !result.timedOut && result.code === 0
+}
+
 export async function viewRepo(slug: string): Promise<RepoViewResult> {
   const result = await runGhRead([
     'repo',

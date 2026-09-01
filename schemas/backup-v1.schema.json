@@ -1,0 +1,173 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-dev-progress-tracker/schemas/backup-v1.schema.json",
+  "title": "AI Dev Progress Tracker — backup data v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "projects",
+    "commits",
+    "evidence",
+    "generationRuns",
+    "runEvidence",
+    "progressSnapshots"
+  ],
+  "properties": {
+    "projects": { "type": "array", "items": { "$ref": "#/$defs/project" } },
+    "commits": { "type": "array", "items": { "$ref": "#/$defs/commit" } },
+    "evidence": { "type": "array", "items": { "$ref": "#/$defs/evidence" } },
+    "generationRuns": { "type": "array", "items": { "$ref": "#/$defs/generationRun" } },
+    "runEvidence": { "type": "array", "items": { "$ref": "#/$defs/runEvidence" } },
+    "progressSnapshots": { "type": "array", "items": { "$ref": "#/$defs/progressSnapshot" } }
+  },
+  "$defs": {
+    "nullableString": { "type": ["string", "null"] },
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "local_path",
+        "repo_node_id",
+        "repo_owner",
+        "repo_name",
+        "repo_url",
+        "default_branch",
+        "status",
+        "created_at",
+        "updated_at"
+      ],
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "local_path": { "type": "string" },
+        "repo_node_id": { "type": "string" },
+        "repo_owner": { "type": "string" },
+        "repo_name": { "type": "string" },
+        "repo_url": { "type": "string" },
+        "default_branch": { "type": "string" },
+        "status": { "type": "string", "enum": ["active", "local_missing"] },
+        "created_at": { "type": "string" },
+        "updated_at": { "type": "string" }
+      }
+    },
+    "commit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["project_id", "sha", "message", "authored_at", "detected_at"],
+      "properties": {
+        "project_id": { "type": "string" },
+        "sha": { "type": "string" },
+        "parent_sha": { "$ref": "#/$defs/nullableString" },
+        "message": { "type": "string" },
+        "authored_at": { "type": "string" },
+        "detected_at": { "type": "string" }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "project_id",
+        "kind",
+        "external_key",
+        "source_version",
+        "title",
+        "payload_json",
+        "captured_at"
+      ],
+      "properties": {
+        "id": { "type": "string" },
+        "project_id": { "type": "string" },
+        "kind": { "type": "string", "enum": ["commit", "issue", "pull_request"] },
+        "external_key": { "type": "string" },
+        "source_version": { "type": "string" },
+        "title": { "type": "string" },
+        "url": { "$ref": "#/$defs/nullableString" },
+        "payload_json": { "type": "string" },
+        "captured_at": { "type": "string" }
+      }
+    },
+    "generationRun": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "dedupe_key",
+        "project_id",
+        "commit_sha",
+        "mode",
+        "trigger",
+        "status",
+        "detected_at",
+        "ai_provider",
+        "ai_model"
+      ],
+      "properties": {
+        "id": { "type": "string" },
+        "dedupe_key": { "type": "string" },
+        "project_id": { "type": "string" },
+        "commit_sha": { "type": "string" },
+        "mode": { "type": "string", "enum": ["generation", "recovery"] },
+        "trigger": {
+          "type": "string",
+          "enum": ["post_commit", "registration", "manual_recovery"]
+        },
+        "status": {
+          "type": "string",
+          "enum": ["queued", "running", "succeeded", "partial", "unrecoverable", "failed"]
+        },
+        "detected_at": { "type": "string" },
+        "started_at": { "$ref": "#/$defs/nullableString" },
+        "finished_at": { "$ref": "#/$defs/nullableString" },
+        "ai_provider": { "type": "string" },
+        "ai_cli_version": { "$ref": "#/$defs/nullableString" },
+        "ai_model": { "type": "string" },
+        "error_code": { "$ref": "#/$defs/nullableString" },
+        "error_message": { "$ref": "#/$defs/nullableString" }
+      }
+    },
+    "runEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "evidence_id"],
+      "properties": {
+        "run_id": { "type": "string" },
+        "evidence_id": { "type": "string" }
+      }
+    },
+    "progressSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "generation_run_id",
+        "project_id",
+        "commit_sha",
+        "recovery_status",
+        "current_position_json",
+        "completed_items_json",
+        "next_actions_json",
+        "decisions_json",
+        "created_at"
+      ],
+      "properties": {
+        "id": { "type": "string" },
+        "generation_run_id": { "type": "string" },
+        "project_id": { "type": "string" },
+        "commit_sha": { "type": "string" },
+        "recovery_status": {
+          "type": "string",
+          "enum": ["complete", "partial", "unrecoverable"]
+        },
+        "current_position_json": { "type": "string" },
+        "completed_items_json": { "type": "string" },
+        "next_actions_json": { "type": "string" },
+        "decisions_json": { "type": "string" },
+        "created_at": { "type": "string" }
+      }
+    }
+  }
+}
