@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { ProjectDetail } from '../../shared/api.js'
 import { getHeadCommit, inspectRepository } from '../adapters/git.js'
-import { checkAuth, viewRepo } from '../adapters/github.js'
+import { checkAuth, getActiveLogin, viewRepo } from '../adapters/github.js'
 import type { Db } from '../db/connection.js'
 import {
   findProjectByLocalPath,
@@ -11,6 +11,7 @@ import {
 } from '../db/project-repository.js'
 import { upsertCommit } from '../db/run-repository.js'
 import type { RegisterProjectRequest } from '../schemas/project.js'
+import { BACKUP_REPO_SUFFIX, enqueueBackup, startBackupWorker } from './backup-service.js'
 import { startGenerationWorker } from './generation-service.js'
 import { assertHooksInstallable, installHooks } from './hook-service.js'
 import { enqueueRecovery } from './recovery-service.js'
@@ -19,7 +20,9 @@ export interface RegisterProjectOptions {
   now?: () => Date
   /** false で登録後の自動 recovery enqueue を抑止する (テスト用)。 */
   autoRecover?: boolean
-  /** recovery worker の spawn を差し替える (テスト用)。 */
+  /** false で登録後の自動 backup enqueue を抑止する (テスト用)。 */
+  autoBackup?: boolean
+  /** recovery / backup worker の spawn を差し替える (テスト用)。 */
   spawnWorker?: (scope: string, ownerToken: string) => void
 }
 
@@ -163,6 +166,25 @@ export async function registerProject(
       startGenerationWorker(db, recovery.scope, recovery.ownerToken, recovery.runId, {
         spawnWorker: options.spawnWorker,
       })
+    }
+  }
+
+  // 16: registration 契機の backup run を enqueue する。
+  if (options.autoBackup !== false && lastCommitSha !== null) {
+    const login = await getActiveLogin()
+    const backupRepo = login === null ? BACKUP_REPO_SUFFIX : `${login}/${BACKUP_REPO_SUFFIX}`
+    const backup = enqueueBackup(
+      db,
+      {
+        trigger: 'registration',
+        projectId: project.id,
+        sourceCommitSha: lastCommitSha,
+        backupRepo,
+      },
+      now,
+    )
+    if (backup.shouldSpawn && backup.ownerToken !== null) {
+      startBackupWorker(db, backup.ownerToken, backup.runId, { spawnWorker: options.spawnWorker })
     }
   }
 

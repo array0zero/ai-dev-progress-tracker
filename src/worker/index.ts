@@ -1,6 +1,8 @@
 import { parseArgs } from 'node:util'
 import { loadConfig } from '../server/config.js'
 import { openDatabase } from '../server/db/connection.js'
+import { BACKUP_SCOPE } from '../server/services/backup-service.js'
+import { processBackupQueue } from './backup-worker.js'
 import { processGenerationQueue } from './generation-worker.js'
 
 async function main(): Promise<void> {
@@ -22,7 +24,11 @@ async function main(): Promise<void> {
 
   const db = openDatabase(loadConfig().dbPath)
   try {
-    await processGenerationQueue(db, scope, token)
+    if (scope === BACKUP_SCOPE) {
+      await processBackupQueue(db, token)
+    } else {
+      await processGenerationQueue(db, scope, token)
+    }
   } finally {
     db.close()
   }

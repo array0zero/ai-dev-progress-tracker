@@ -1,5 +1,6 @@
 import { parseArgs } from 'node:util'
 import { runDoctor } from './commands/doctor.js'
+import { runHookBackup } from './commands/hook-backup.js'
 import { type HookCommitArgs, runHookCommit } from './commands/hook-commit.js'
 
 function parseHookArgs(argv: readonly string[]): HookCommitArgs | null {
@@ -33,6 +34,14 @@ async function dispatch(argv: readonly string[]): Promise<number> {
         return 2
       }
       return runHookCommit(parsed)
+    }
+    case 'hook-backup': {
+      const parsed = parseHookArgs(rest)
+      if (parsed === null) {
+        process.stderr.write('hook-backup: --project-id, --repo and --sha are required\n')
+        return 2
+      }
+      return runHookBackup(parsed)
     }
     default:
       process.stderr.write(`Unknown command: ${command ?? '(none)'}\n`)

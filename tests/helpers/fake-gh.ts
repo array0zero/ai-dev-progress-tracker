@@ -11,6 +11,10 @@ export interface FakeRepoData {
 export interface FakeGhFixtures {
   /** exit code for `gh auth status ...` */
   authStatusExitCode?: number
+  /** `gh api user --jq .login` の出力 */
+  login?: string
+  /** exit code for `gh repo create ...` */
+  repoCreateExitCode?: number
   /** fallback data when a slug is not in `repos` */
   repoView?: Record<string, unknown>
   issues?: unknown[]
@@ -46,6 +50,19 @@ const [c0, c1] = argv
 
 if (c0 === 'auth' && c1 === 'status') {
   process.exit(fixtures.authStatusExitCode ?? 0)
+}
+
+if (c0 === 'auth' && c1 === 'setup-git') {
+  process.exit(0)
+}
+
+if (c0 === 'api' && c1 === 'user') {
+  process.stdout.write(fixtures.login ?? 'fake-user')
+  process.exit(0)
+}
+
+if (c0 === 'repo' && c1 === 'create') {
+  process.exit(fixtures.repoCreateExitCode ?? 0)
 }
 
 const slug = slugFromArgs(argv)

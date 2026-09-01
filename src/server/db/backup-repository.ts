@@ -152,3 +152,33 @@ export function hasActiveBackupRun(db: Db): boolean {
     undefined
   )
 }
+
+export function hasQueuedBackupRuns(db: Db): boolean {
+  return db.prepare("SELECT 1 FROM backup_runs WHERE status = 'queued' LIMIT 1").get() !== undefined
+}
+
+/** 最古の queued backup run を atomic に running へ遷移して返す。 */
+export function claimNextQueuedBackupRun(db: Db, now: Date = new Date()): BackupRunRecord | null {
+  const claim = db.transaction((): BackupRunRecord | null => {
+    const row = db
+      .prepare(
+        `SELECT ${SELECT_COLUMNS} FROM backup_runs WHERE status = 'queued'
+         ORDER BY queued_at ASC, id ASC LIMIT 1`,
+      )
+      .get() as BackupRunRow | undefined
+    if (row === undefined) {
+      return null
+    }
+    const startedAt = now.toISOString()
+    const updated = db
+      .prepare(
+        "UPDATE backup_runs SET status = 'running', started_at = ? WHERE id = ? AND status = 'queued'",
+      )
+      .run(startedAt, row.id)
+    if (updated.changes !== 1) {
+      return null
+    }
+    return rowToBackupRun({ ...row, status: 'running', started_at: startedAt })
+  })
+  return claim()
+}

@@ -71,7 +71,7 @@ describe('recovery flow', () => {
     const result = await registerProject(
       { name: 'acme/widget', localPath: repo.root, repository: 'acme/widget' },
       db,
-      { spawnWorker: () => undefined },
+      { autoBackup: false, spawnWorker: () => undefined },
     )
     if (!result.ok) {
       throw new Error(`registration failed: ${result.code}`)

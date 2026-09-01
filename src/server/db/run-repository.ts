@@ -188,6 +188,30 @@ export function hasQueuedGenerationRuns(db: Db, projectId: string): boolean {
   )
 }
 
+/** 全 project を通じて queued|running の generation run があるか (manual backup の待機判定用)。 */
+export function hasActiveGenerationRuns(db: Db): boolean {
+  return (
+    db
+      .prepare("SELECT 1 FROM generation_runs WHERE status IN ('queued', 'running') LIMIT 1")
+      .get() !== undefined
+  )
+}
+
+export function isGenerationTerminalForCommit(
+  db: Db,
+  projectId: string,
+  commitSha: string,
+): boolean {
+  const row = db
+    .prepare(
+      `SELECT 1 FROM generation_runs
+       WHERE project_id = ? AND commit_sha = ? AND status IN ('queued', 'running') LIMIT 1`,
+    )
+    .get(projectId, commitSha)
+  // queued/running が無ければ terminal (該当 run が無い場合も「待つべきものが無い」= terminal 扱い)
+  return row === undefined
+}
+
 /**
  * 対象projectの queued run を `detected_at ASC, id ASC` で 1 件だけ atomic に running へ遷移して返す。
  * 取れなければ null。

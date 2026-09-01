@@ -77,3 +77,23 @@ export interface RegisterProjectRequestBody {
   localPath: string
   repository: string
 }
+
+export interface GenerationFailureSummary {
+  projectId: string
+  projectName: string
+  runId: string
+  status: string
+  errorCode: string | null
+  detectedAt: string
+}
+
+export interface BackupFailureSummary {
+  backupRunId: string
+  errorCode: string | null
+  queuedAt: string
+}
+
+export interface SystemStatus {
+  latestGenerationFailure: GenerationFailureSummary | null
+  latestBackupFailure: BackupFailureSummary | null
+}
