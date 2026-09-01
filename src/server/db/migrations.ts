@@ -9,6 +9,9 @@ interface Migration {
 
 const MIGRATIONS: readonly Migration[] = [{ version: 1, file: '001_init.sql' }]
 
+/** 最新 migration version。backup manifest の schemaVersion と一致する必要がある。 */
+export const LATEST_MIGRATION_VERSION = 1
+
 function readMigrationSql(file: string): string {
   const url = new URL(`../../../db/migrations/${file}`, import.meta.url)
   return readFileSync(fileURLToPath(url), 'utf8')

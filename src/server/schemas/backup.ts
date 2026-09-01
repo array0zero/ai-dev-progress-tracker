@@ -85,14 +85,97 @@ export const backupDataSchema = z.object({
 
 export type BackupData = z.infer<typeof backupDataSchema>
 
-/** data 部の各テーブル名 (top-level key)。row 配列は下記の順で export/import する。 */
+/**
+ * data 部の各テーブル (top-level key)。
+ * export は下記の順、import (restore) も FK-safe なこの順で行う。
+ * `columns` は INSERT の列順 = DDL の列順。
+ */
 export const BACKUP_TABLES = [
-  { key: 'projects', table: 'projects', orderBy: 'id' },
-  { key: 'commits', table: 'commits', orderBy: 'project_id, sha' },
-  { key: 'evidence', table: 'evidence', orderBy: 'id' },
-  { key: 'generationRuns', table: 'generation_runs', orderBy: 'id' },
-  { key: 'runEvidence', table: 'run_evidence', orderBy: 'run_id, evidence_id' },
-  { key: 'progressSnapshots', table: 'progress_snapshots', orderBy: 'id' },
+  {
+    key: 'projects',
+    table: 'projects',
+    orderBy: 'id',
+    columns: [
+      'id',
+      'name',
+      'local_path',
+      'repo_node_id',
+      'repo_owner',
+      'repo_name',
+      'repo_url',
+      'default_branch',
+      'status',
+      'created_at',
+      'updated_at',
+    ],
+  },
+  {
+    key: 'commits',
+    table: 'commits',
+    orderBy: 'project_id, sha',
+    columns: ['project_id', 'sha', 'parent_sha', 'message', 'authored_at', 'detected_at'],
+  },
+  {
+    key: 'evidence',
+    table: 'evidence',
+    orderBy: 'id',
+    columns: [
+      'id',
+      'project_id',
+      'kind',
+      'external_key',
+      'source_version',
+      'title',
+      'url',
+      'payload_json',
+      'captured_at',
+    ],
+  },
+  {
+    key: 'generationRuns',
+    table: 'generation_runs',
+    orderBy: 'id',
+    columns: [
+      'id',
+      'dedupe_key',
+      'project_id',
+      'commit_sha',
+      'mode',
+      'trigger',
+      'status',
+      'detected_at',
+      'started_at',
+      'finished_at',
+      'ai_provider',
+      'ai_cli_version',
+      'ai_model',
+      'error_code',
+      'error_message',
+    ],
+  },
+  {
+    key: 'runEvidence',
+    table: 'run_evidence',
+    orderBy: 'run_id, evidence_id',
+    columns: ['run_id', 'evidence_id'],
+  },
+  {
+    key: 'progressSnapshots',
+    table: 'progress_snapshots',
+    orderBy: 'id',
+    columns: [
+      'id',
+      'generation_run_id',
+      'project_id',
+      'commit_sha',
+      'recovery_status',
+      'current_position_json',
+      'completed_items_json',
+      'next_actions_json',
+      'decisions_json',
+      'created_at',
+    ],
+  },
 ] as const
 
 export type BackupTableKey = (typeof BACKUP_TABLES)[number]['key']
