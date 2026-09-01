@@ -6,6 +6,7 @@ export interface AppConfig {
   readonly host: '127.0.0.1'
   readonly port: number
   readonly dataDir: string
+  readonly dbPath: string
   readonly webRoot: string
 }
 
@@ -32,10 +33,12 @@ function resolveDataDir(raw: string | undefined): string {
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
+  const dataDir = resolveDataDir(env.TRACKER_DATA_DIR)
   return {
     host: '127.0.0.1',
     port: parsePort(env.TRACKER_PORT),
-    dataDir: resolveDataDir(env.TRACKER_DATA_DIR),
+    dataDir,
+    dbPath: resolve(dataDir, 'tracker.db'),
     webRoot: resolve(process.cwd(), 'dist', 'web'),
   }
 }

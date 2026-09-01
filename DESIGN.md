@@ -8,8 +8,9 @@ source: PLAN.md v1.2 + 実機検証結果（2026-09-01）
 ## v1.2変更点
 
 - npm `12.0.2`は依存パッケージのinstall scriptを既定でblockするため、`package.json`へ`allowScripts`フィールドを追加し、`better-sqlite3`と`esbuild`のみをバージョンピンで許可する。
-- 上記は依存のバージョン指定・ディレクトリ構成を変更しない。dependencies/devDependencies 16件とnpm `12.0.2`の完全一致固定は維持する。
-- 設計判断ログにD019を追加。
+- `better-sqlite3`は型定義を同梱しないため、`devDependencies`へ型定義専用パッケージ`@types/better-sqlite3`を`9.6.0`固定で追加する。ランタイム依存・採用技術は変更しない。
+- 上記はdependencies/devDependenciesの既存バージョン指定・ディレクトリ構成を変更しない。npm `12.0.2`と既存16件の完全一致固定は維持する。
+- 設計判断ログにD019・D020を追加。
 
 ## v1.1変更点
 
@@ -170,6 +171,7 @@ source: PLAN.md v1.2 + 実機検証結果（2026-09-01）
 | React型 | @types/react | 19.2.18 | — | — |
 | React DOM型 | @types/react-dom | 19.2.5 | — | — |
 | Node型 | @types/node | 24.13.3 | — | — |
+| better-sqlite3型 | @types/better-sqlite3 | 9.6.0 | — | — |
 | GitHub連携 | GitHub CLI (`gh`) | `>=2.98.0` | — | — |
 | AI実行 | OpenAI Codex CLI | `>=0.146.0` | — | — |
 | AIモデル | GPT-5.6 Terra | `gpt-5.6-terra` | — | — |
@@ -230,7 +232,8 @@ source: PLAN.md v1.2 + 実機検証結果（2026-09-01）
     "tsx": "4.23.13",
     "typescript": "7.0.2",
     "vite": "8.2.2",
-    "vitest": "4.1.11"
+    "vitest": "4.1.11",
+    "@types/better-sqlite3": "9.6.0"
   },
   "allowScripts": {
     "esbuild@0.28.2": true,
@@ -1423,6 +1426,7 @@ DB:
 | D017 | timeline | 保存はするが専用時系列UIを作らない | F10 WON'T(v1)を維持する | — |
 | D018 | runtime/CLI version policy | Node `>=24.15.0 <25`、Git `>=2.45.0`、gh `>=2.98.0`、Codex `>=0.146.0` | 実機検証差分をv1.1へ反映 | — |
 | D019 | 依存install script許可 | npm `12.0.2`が既定でblockするため`package.json`の`allowScripts`で`better-sqlite3`と`esbuild`のみバージョンピン許可 | native/build依存を`npm ci`で動作させつつ許可対象を最小化する | 全script許可（却下: 攻撃面拡大）／native依存を別実装へ差し替え（却下: DESIGN技術選定固定） |
+| D020 | better-sqlite3の型定義 | 型定義専用パッケージ`@types/better-sqlite3@9.6.0`を`devDependencies`へ追加 | `better-sqlite3`は型を同梱せず、`strict`前提のtypecheckに型が必須。ランタイム挙動は不変 | 手書きambient宣言（却下: 保守コスト増・不正確）／`any`許容（却下: 規約でany禁止） |
 
 ---
 
