@@ -46,6 +46,39 @@ export type ProgressFieldStatus = z.infer<typeof statusSchema>
 
 export const NEEDS_INPUT_TEXT = '要補完'
 
+export const PROGRESS_FIELD_KEYS = [
+  'currentPosition',
+  'completedItems',
+  'nextActions',
+  'importantDecisions',
+] as const
+export type ProgressFieldKey = (typeof PROGRESS_FIELD_KEYS)[number]
+
+export type RecoveryStatus = 'complete' | 'partial' | 'unrecoverable'
+
+export interface RecoveryClassification {
+  runStatus: 'succeeded' | 'partial' | 'unrecoverable'
+  recoveryStatus: RecoveryStatus
+}
+
+/** DESIGN.md: confirmed field 数 4 -> complete、1..3 -> partial、0 -> unrecoverable。 */
+export function classifyByConfirmedCount(confirmedCount: number): RecoveryClassification {
+  if (confirmedCount >= 4) {
+    return { runStatus: 'succeeded', recoveryStatus: 'complete' }
+  }
+  if (confirmedCount >= 1) {
+    return { runStatus: 'partial', recoveryStatus: 'partial' }
+  }
+  return { runStatus: 'unrecoverable', recoveryStatus: 'unrecoverable' }
+}
+
+/** status が needs_input の field 名一覧 (UI の不足項目表示用)。 */
+export function missingFieldKeys(
+  statuses: Record<ProgressFieldKey, ProgressFieldStatus>,
+): ProgressFieldKey[] {
+  return PROGRESS_FIELD_KEYS.filter((key) => statuses[key] === 'needs_input')
+}
+
 export type ProgressValidationResult =
   | { ok: true; progress: ProgressOutput; confirmedCount: number }
   | { ok: false; code: string; reason: string }

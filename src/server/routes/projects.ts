@@ -11,7 +11,9 @@ import {
 import { getProjectById, listProjects, type ProjectRecord } from '../db/project-repository.js'
 import { getLatestCommit, getLatestGenerationRun } from '../db/run-repository.js'
 import { registerProjectRequestSchema } from '../schemas/project.js'
+import { startGenerationWorker } from '../services/generation-service.js'
 import { type RegisterProjectResult, registerProject } from '../services/project-service.js'
+import { enqueueRecovery } from '../services/recovery-service.js'
 
 function errorBody(code: string, message: string): ApiErrorBody {
   return { error: { code, message } }
@@ -185,6 +187,21 @@ export function projectRoutes(db: Db): FastifyPluginAsync {
         return reply.code(result.status).send(errorBody(result.code, result.message))
       }
       return reply.code(201).send(result.project)
+    })
+
+    app.post('/projects/:id/recover', async (request, reply) => {
+      const { id } = request.params as { id: string }
+      if (getProjectById(db, id) === null) {
+        return reply.code(404).send(errorBody('PROJECT_NOT_FOUND', 'Project not found.'))
+      }
+      const recovery = enqueueRecovery(db, id, 'manual_recovery')
+      if (!recovery.ok) {
+        return reply.code(recovery.status).send(errorBody(recovery.code, recovery.code))
+      }
+      if (recovery.shouldSpawn && recovery.ownerToken !== null) {
+        startGenerationWorker(db, recovery.scope, recovery.ownerToken, recovery.runId)
+      }
+      return reply.code(202).send({ runId: recovery.runId, status: 'queued' })
     })
   }
 }

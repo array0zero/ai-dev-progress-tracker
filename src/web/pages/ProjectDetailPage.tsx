@@ -1,9 +1,16 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { DecisionView, ProjectDetail } from '../../shared/api.js'
-import { ApiError, fetchProject } from '../api/client.js'
+import { ApiError, fetchProject, recoverProject } from '../api/client.js'
 import { EvidenceList } from '../components/EvidenceList.js'
 import { ProgressSection } from '../components/ProgressSection.js'
 import { StatusBanner } from '../components/StatusBanner.js'
+
+const FIELD_LABELS: Record<string, string> = {
+  currentPosition: '現在地',
+  completedItems: '完了事項',
+  nextActions: '次の作業',
+  importantDecisions: '重要な判断事項',
+}
 
 interface BannerState {
   code: string
@@ -18,6 +25,8 @@ export function ProjectDetailPage({ projectId }: ProjectDetailPageProps) {
   const [detail, setDetail] = useState<ProjectDetail | null>(null)
   const [banner, setBanner] = useState<BannerState | null>(null)
   const [loading, setLoading] = useState(true)
+
+  const [recovering, setRecovering] = useState(false)
 
   const load = useCallback(async () => {
     try {
@@ -39,6 +48,22 @@ export function ProjectDetailPage({ projectId }: ProjectDetailPageProps) {
     void load()
   }, [load])
 
+  async function handleRecover(): Promise<void> {
+    setRecovering(true)
+    try {
+      await recoverProject(projectId)
+      setBanner({ code: 'RECOVERY_QUEUED', message: '再生成を開始しました。' })
+    } catch (error) {
+      if (error instanceof ApiError) {
+        setBanner({ code: error.code, message: error.message })
+      } else {
+        setBanner({ code: 'INTERNAL_ERROR', message: 'Failed to start recovery.' })
+      }
+    } finally {
+      setRecovering(false)
+    }
+  }
+
   return (
     <main className="app">
       <a className="detail-back" href="/">
@@ -53,6 +78,21 @@ export function ProjectDetailPage({ projectId }: ProjectDetailPageProps) {
           <h1>{detail.name}</h1>
           <p className="project-detail__repo">{detail.repository}</p>
           <p className="project-detail__sha">{detail.lastCommitSha?.slice(0, 8) ?? '—'}</p>
+
+          <button type="button" onClick={handleRecover} disabled={recovering}>
+            進捗を再生成
+          </button>
+
+          {detail.missingFields.length > 0 ? (
+            <section className="project-detail__missing" aria-label="不足項目">
+              <h2>要補完の項目</h2>
+              <ul>
+                {detail.missingFields.map((field) => (
+                  <li key={field}>{FIELD_LABELS[field] ?? field}</li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
 
           <ProgressSection
             title="現在地"

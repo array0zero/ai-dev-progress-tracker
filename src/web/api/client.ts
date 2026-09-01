@@ -46,6 +46,18 @@ export async function fetchProject(id: string): Promise<ProjectDetail> {
   return (await response.json()) as ProjectDetail
 }
 
+export async function recoverProject(id: string): Promise<{ runId: string; status: string }> {
+  const response = await fetch(`/api/projects/${encodeURIComponent(id)}/recover`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{}',
+  })
+  if (!response.ok) {
+    throw await toApiError(response)
+  }
+  return (await response.json()) as { runId: string; status: string }
+}
+
 export async function createProject(body: RegisterProjectRequestBody): Promise<ProjectDetail> {
   const response = await fetch('/api/projects', {
     method: 'POST',

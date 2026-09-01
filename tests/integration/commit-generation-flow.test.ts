@@ -41,7 +41,9 @@ function repoView(id: string, slug: string): Record<string, unknown> {
 }
 
 async function registerTempProject(db: Db, repo: TempRepo, slug: string): Promise<string> {
-  const result = await registerProject({ name: slug, localPath: repo.root, repository: slug }, db)
+  const result = await registerProject({ name: slug, localPath: repo.root, repository: slug }, db, {
+    autoRecover: false,
+  })
   if (!result.ok) {
     throw new Error(`registration failed: ${result.code}`)
   }

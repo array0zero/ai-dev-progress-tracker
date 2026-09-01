@@ -50,6 +50,7 @@ describe('project registration', () => {
     const result = await registerProject(
       { name: 'Widget', localPath: repo.root, repository: 'acme/widget' },
       ctx.db,
+      { autoRecover: false },
     )
     expect(result.ok).toBe(true)
     if (!result.ok) {
@@ -78,6 +79,7 @@ describe('project registration', () => {
     const result = await registerProject(
       { name: 'X', localPath: repo.root, repository: 'evil/other' },
       ctx.db,
+      { autoRecover: false },
     )
     expect(result).toMatchObject({ ok: false, status: 422, code: 'REPOSITORY_MISMATCH' })
     expect(listProjects(ctx.db)).toHaveLength(0)
@@ -87,10 +89,12 @@ describe('project registration', () => {
     await registerProject(
       { name: 'Widget', localPath: repo.root, repository: 'acme/widget' },
       ctx.db,
+      { autoRecover: false },
     )
     const again = await registerProject(
       { name: 'Widget again', localPath: repo.root, repository: 'acme/widget' },
       ctx.db,
+      { autoRecover: false },
     )
     expect(again).toMatchObject({ ok: false, status: 409, code: 'PROJECT_ALREADY_REGISTERED' })
     expect(listProjects(ctx.db)).toHaveLength(1)
@@ -100,6 +104,7 @@ describe('project registration', () => {
     const result = await registerProject(
       { name: 'Widget', localPath: repo.root, repository: 'acme/widget' },
       ctx.db,
+      { autoRecover: false },
     )
     expect(result.ok).toBe(true)
     if (!result.ok) {

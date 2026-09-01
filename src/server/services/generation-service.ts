@@ -1,7 +1,6 @@
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
-import type { ProgressRecoveryStatus } from '../../shared/domain.js'
 import { checkCodexReady, runCodexGeneration } from '../adapters/codex.js'
 import { getCommitShow } from '../adapters/git.js'
 import { listIssues, listPullRequests } from '../adapters/github.js'
@@ -28,7 +27,12 @@ import {
   markRunTerminal,
   recordCodexCliVersion,
 } from '../db/run-repository.js'
-import { type ProgressOutput, validateProgressOutput } from '../schemas/progress.js'
+import {
+  classifyByConfirmedCount,
+  type ProgressOutput,
+  type RecoveryClassification,
+  validateProgressOutput,
+} from '../schemas/progress.js'
 import { redactHighConfidenceSecrets } from '../security/redaction.js'
 
 export interface EnqueueGenerationParams {
@@ -36,6 +40,8 @@ export interface EnqueueGenerationParams {
   sha: string
   mode: GenerationRunMode
   trigger: GenerationRunTrigger
+  /** 既定は `generation:<project>:<sha>`。recovery は重複しない key を渡す。 */
+  dedupeKey?: string
 }
 
 export interface EnqueueGenerationResult {
@@ -64,7 +70,7 @@ export function enqueueGeneration(
   now: () => Date = () => new Date(),
 ): EnqueueGenerationResult {
   const scope = generationScope(params.projectId)
-  const dedupeKey = generationDedupeKey(params.projectId, params.sha)
+  const dedupeKey = params.dedupeKey ?? generationDedupeKey(params.projectId, params.sha)
   const ownerToken = randomUUID()
 
   const enqueue = db.transaction((): EnqueueGenerationResult => {
@@ -351,22 +357,6 @@ export async function runGeneration(db: Db, run: GenerationRunRecord): Promise<v
   persistSnapshot(db, run, validation.progress, validation.confirmedCount, ready.version)
 }
 
-interface Classification {
-  runStatus: 'succeeded' | 'partial' | 'unrecoverable'
-  recoveryStatus: ProgressRecoveryStatus
-}
-
-/** DESIGN.md: confirmed 数 4 -> complete、1..3 -> partial、0 -> unrecoverable。 */
-export function classifyByConfirmedCount(confirmedCount: number): Classification {
-  if (confirmedCount >= 4) {
-    return { runStatus: 'succeeded', recoveryStatus: 'complete' }
-  }
-  if (confirmedCount >= 1) {
-    return { runStatus: 'partial', recoveryStatus: 'partial' }
-  }
-  return { runStatus: 'unrecoverable', recoveryStatus: 'unrecoverable' }
-}
-
 /** valid output を 1 transaction で snapshot 保存 + run を分類終端する。 */
 export function persistSnapshot(
   db: Db,
@@ -375,7 +365,7 @@ export function persistSnapshot(
   confirmedCount: number,
   aiCliVersion: string | null,
   now: () => Date = () => new Date(),
-): Classification {
+): RecoveryClassification {
   const classification = classifyByConfirmedCount(confirmedCount)
   const timestamp = now()
   const save = db.transaction((): void => {

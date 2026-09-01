@@ -11,7 +11,17 @@ import {
 } from '../db/project-repository.js'
 import { upsertCommit } from '../db/run-repository.js'
 import type { RegisterProjectRequest } from '../schemas/project.js'
+import { startGenerationWorker } from './generation-service.js'
 import { assertHooksInstallable, installHooks } from './hook-service.js'
+import { enqueueRecovery } from './recovery-service.js'
+
+export interface RegisterProjectOptions {
+  now?: () => Date
+  /** false で登録後の自動 recovery enqueue を抑止する (テスト用)。 */
+  autoRecover?: boolean
+  /** recovery worker の spawn を差し替える (テスト用)。 */
+  spawnWorker?: (scope: string, ownerToken: string) => void
+}
 
 export interface RegisterProjectFailure {
   ok: false
@@ -62,14 +72,16 @@ function toDetail(project: ProjectRecord, lastCommitSha: string | null): Project
 }
 
 /**
- * DESIGN.md「固定検証順」1〜14 を実装する。
- * 15 (recovery run enqueue) と 16 (backup enqueue) は T012 / T014 で追加する。
+ * DESIGN.md「固定検証順」1〜15 を実装する。
+ * 15: snapshot がないため `recovery` run を自動 enqueue する。
+ * 16 (backup enqueue) は T014。
  */
 export async function registerProject(
   input: RegisterProjectRequest,
   db: Db,
-  now: () => Date = () => new Date(),
+  options: RegisterProjectOptions = {},
 ): Promise<RegisterProjectResult> {
+  const now = options.now ?? (() => new Date())
   // 1〜8: local Git root / layout / origin 帰属
   const inspection = await inspectRepository(input.localPath, input.repository)
   if (!inspection.ok) {
@@ -142,6 +154,16 @@ export async function registerProject(
       detectedAt: iso,
     })
     lastCommitSha = head.sha
+  }
+
+  // 15: snapshot がないため recovery run を自動 enqueue する。
+  if (options.autoRecover !== false && lastCommitSha !== null) {
+    const recovery = enqueueRecovery(db, project.id, 'registration', now)
+    if (recovery.ok && recovery.shouldSpawn && recovery.ownerToken !== null) {
+      startGenerationWorker(db, recovery.scope, recovery.ownerToken, recovery.runId, {
+        spawnWorker: options.spawnWorker,
+      })
+    }
   }
 
   return { ok: true, project: toDetail(project, lastCommitSha) }
