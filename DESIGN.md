@@ -10,6 +10,7 @@ source: PLAN.md v1.2 + 実機検証結果（2026-09-01）+ Windows実機不具�
 - `eval-generation.ts`が対象repoに直接commitして呼び出し元のbranch / working treeを汚す問題を修正。HEADから切り出したdetachedな`git worktree`内でのみcommitし、終了時にworktreeごと破棄する。fixtureの`files`は新規ファイル（`docs/eval/<id>.md`）のみに限定。
 - `generation-cases.json`の`expected`を実測へ是正: `importantDecisions`は`confirmed` + 根拠（旧fixtureは誤って`needs_input`を期待）、`nextActions`は単一commitでは根拠不足のため`needs_input`を期待。自然言語生成に脆い`mustContain` / `mustNotContain`のsubstring一致は必須条件から外し任意の補助チェックに変更。
 - 評価pass条件を「status一致 + confirmed fieldは根拠必須 + unknown evidence 0 + start latency <= 60秒」に整理。
+- project repo rootへ`.gitattributes`（`* text=auto eol=lf`）を追加。Windowsの`core.autocrlf`で`git checkout`がCRLF化するとbiome（LF）と食い違い`npm run lint` / `test:all`がローカルで失敗するため、全プラットフォームでLFへ正規化する（backup repoの`.gitattributes`と同じ改行方針）。
 - 設計判断ログにD024を追加。
 
 ## v1.5変更点
@@ -459,6 +460,7 @@ ai-dev-progress-tracker/
 │       ├── redaction.test.ts
 │       └── smoke.test.ts
 ├── .env.example
+├── .gitattributes
 ├── .gitignore
 ├── .nvmrc
 ├── AGENTS.md
