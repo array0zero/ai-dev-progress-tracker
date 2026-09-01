@@ -1,9 +1,15 @@
 # DESIGN.md — 設計書
 
 project_id: ai-dev-progress-tracker  
-version: 1.1  
+version: 1.2  
 date: 2026-09-01  
 source: PLAN.md v1.2 + 実機検証結果（2026-09-01）
+
+## v1.2変更点
+
+- npm `12.0.2`は依存パッケージのinstall scriptを既定でblockするため、`package.json`へ`allowScripts`フィールドを追加し、`better-sqlite3`と`esbuild`のみをバージョンピンで許可する。
+- 上記は依存のバージョン指定・ディレクトリ構成を変更しない。dependencies/devDependencies 16件とnpm `12.0.2`の完全一致固定は維持する。
+- 設計判断ログにD019を追加。
 
 ## v1.1変更点
 
@@ -225,9 +231,18 @@ source: PLAN.md v1.2 + 実機検証結果（2026-09-01）
     "typescript": "7.0.2",
     "vite": "8.2.2",
     "vitest": "4.1.11"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true,
+    "better-sqlite3@13.0.3": true
   }
 }
 ```
+
+`allowScripts`はnpm `12.0.2`が依存のinstall scriptを既定でblockするための許可リストである。
+`better-sqlite3`（採用DBドライバのnativeビルド）と`esbuild`（Vite build依存）のみを、レビュー済みバージョンにピンして許可する。
+新たな依存追加でinstall scriptが増えた場合は`npm install-scripts approve <pkg>`で同フィールドへ追記する。
+このフィールドはdependencies/devDependenciesのバージョン指定を変更しない。
 
 ### 外部CLI・ランタイム要件
 
@@ -1407,6 +1422,7 @@ DB:
 | D016 | project削除 | v1ではAPI/UIを実装しない | F1〜F7以外を増やさない | — |
 | D017 | timeline | 保存はするが専用時系列UIを作らない | F10 WON'T(v1)を維持する | — |
 | D018 | runtime/CLI version policy | Node `>=24.15.0 <25`、Git `>=2.45.0`、gh `>=2.98.0`、Codex `>=0.146.0` | 実機検証差分をv1.1へ反映 | — |
+| D019 | 依存install script許可 | npm `12.0.2`が既定でblockするため`package.json`の`allowScripts`で`better-sqlite3`と`esbuild`のみバージョンピン許可 | native/build依存を`npm ci`で動作させつつ許可対象を最小化する | 全script許可（却下: 攻撃面拡大）／native依存を別実装へ差し替え（却下: DESIGN技術選定固定） |
 
 ---
 
