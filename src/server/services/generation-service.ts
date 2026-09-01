@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
+import { checkCodexReady, runCodexGeneration } from '../adapters/codex.js'
 import { getCommitShow } from '../adapters/git.js'
 import { listIssues, listPullRequests } from '../adapters/github.js'
 import type { Db } from '../db/connection.js'
@@ -23,6 +24,7 @@ import {
   insertRun,
   markRunFailed,
 } from '../db/run-repository.js'
+import { validateProgressOutput } from '../schemas/progress.js'
 import { redactHighConfidenceSecrets } from '../security/redaction.js'
 
 export interface EnqueueGenerationParams {
@@ -296,12 +298,57 @@ export async function collectEvidenceBundle(
   }
 }
 
+const PROMPT_CONTRACT = `あなたは開発進捗抽出器です。
+入力のevidence以外の知識・推測を使わないでください。
+4フィールド currentPosition / completedItems / nextActions / importantDecisions を返してください。
+根拠が不足するfieldは status=needs_input とし、指定された要補完形式を使ってください。
+evidenceIdsには入力bundleに存在するIDだけを使用してください。
+判断事項にはdecisionとrationaleを含めてください。
+JSON Schemaに完全一致する出力だけを返してください。`
+
+export function buildGenerationPrompt(bundle: EvidenceBundle): string {
+  const payload = {
+    commitSha: bundle.commitSha,
+    evidence: bundle.evidence,
+    latestSnapshot: bundle.latestSnapshotContext,
+  }
+  return `${PROMPT_CONTRACT}\n\n<evidence_bundle>\n${JSON.stringify(payload, null, 2)}\n</evidence_bundle>\n`
+}
+
 /**
- * generation 本体。T009 で evidence bundle 収集を実装。
- * T010 で Codex 実行、T011 で snapshot 保存 / confirmed 数分類 を追加する。
- * 現状は Codex 未配線のため bundle 収集後に failed(CODEX_UNAVAILABLE) で終端する。
+ * generation 本体。
+ * T009: evidence bundle 収集 / T010: Codex 実行 + 出力検証 / T011: snapshot 保存 + confirmed 数分類。
+ * 現状は検証まで実装し、snapshot 永続化は T011。
  */
 export async function runGeneration(db: Db, run: GenerationRunRecord): Promise<void> {
-  await collectEvidenceBundle(db, run)
-  markRunFailed(db, run.id, 'CODEX_UNAVAILABLE', 'Codex generation pipeline is not configured yet.')
+  const bundle = await collectEvidenceBundle(db, run)
+
+  const ready = await checkCodexReady()
+  if (!ready.ok) {
+    markRunFailed(db, run.id, ready.code, `Codex is not ready (${ready.code}).`)
+    return
+  }
+
+  const exec = await runCodexGeneration(buildGenerationPrompt(bundle))
+  if (!exec.ok) {
+    markRunFailed(db, run.id, exec.code, 'Codex execution did not produce a valid output.')
+    return
+  }
+
+  const validation = validateProgressOutput(
+    exec.output,
+    new Set(bundle.evidence.map((item) => item.id)),
+  )
+  if (!validation.ok) {
+    markRunFailed(db, run.id, validation.code, validation.reason.slice(0, 500))
+    return
+  }
+
+  // T011: valid output を progress snapshot へ transaction 保存し、confirmed 数で分類する。
+  markRunFailed(
+    db,
+    run.id,
+    'SNAPSHOT_PERSIST_PENDING',
+    'Codex output validated; snapshot persistence lands in T011.',
+  )
 }

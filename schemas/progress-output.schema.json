@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-dev-progress-tracker/schemas/progress-output.schema.json",
+  "title": "AI Dev Progress Tracker — progress output",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "currentPosition",
+    "completedItems",
+    "nextActions",
+    "importantDecisions"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "currentPosition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "text", "evidenceIds"],
+      "properties": {
+        "status": { "enum": ["confirmed", "needs_input"] },
+        "text": { "type": "string" },
+        "evidenceIds": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "completedItems": { "$ref": "#/$defs/listField" },
+    "nextActions": { "$ref": "#/$defs/listField" },
+    "importantDecisions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "items", "evidenceIds"],
+      "properties": {
+        "status": { "enum": ["confirmed", "needs_input"] },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["decision", "rationale", "evidenceIds"],
+            "properties": {
+              "decision": { "type": "string" },
+              "rationale": { "type": "string" },
+              "evidenceIds": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        },
+        "evidenceIds": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  },
+  "$defs": {
+    "listField": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "items", "evidenceIds"],
+      "properties": {
+        "status": { "enum": ["confirmed", "needs_input"] },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["text", "evidenceIds"],
+            "properties": {
+              "text": { "type": "string" },
+              "evidenceIds": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        },
+        "evidenceIds": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}
