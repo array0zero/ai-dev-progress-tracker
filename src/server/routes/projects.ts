@@ -1,13 +1,15 @@
 import type { FastifyPluginAsync } from 'fastify'
 import type { ApiErrorBody, DecisionView, ProjectDetail, ProjectSummary } from '../../shared/api.js'
+import { getLatestBackupRun } from '../db/backup-repository.js'
 import type { Db } from '../db/connection.js'
 import {
+  getLatestProgress,
   getLatestSnapshotByProject,
   readSnapshotView,
   resolveEvidence,
 } from '../db/progress-repository.js'
 import { getProjectById, listProjects, type ProjectRecord } from '../db/project-repository.js'
-import { getLatestCommit } from '../db/run-repository.js'
+import { getLatestCommit, getLatestGenerationRun } from '../db/run-repository.js'
 import { registerProjectRequestSchema } from '../schemas/project.js'
 import { type RegisterProjectResult, registerProject } from '../services/project-service.js'
 
@@ -15,19 +17,54 @@ function errorBody(code: string, message: string): ApiErrorBody {
   return { error: { code, message } }
 }
 
+/**
+ * dashboard/detail 共通の read model。
+ * 最新 snapshot (detected_at DESC, created_at DESC) の field を反映し、
+ * 古い commit の遅延完了で最終反映 commit を巻き戻さない。
+ */
 function baseSummary(db: Db, project: ProjectRecord): ProjectSummary {
+  const latestGeneration = getLatestGenerationRun(db, project.id)
+  const latestBackup = getLatestBackupRun(db)
+  const progress = getLatestProgress(db, project.id)
+
+  if (progress === null) {
+    return {
+      id: project.id,
+      name: project.name,
+      repository: `${project.repoOwner}/${project.repoName}`,
+      repositoryUrl: project.repoUrl,
+      lastCommitSha: getLatestCommit(db, project.id)?.sha ?? null,
+      progressStatus: null,
+      currentPosition: null,
+      completedItems: [],
+      nextActions: [],
+      generationStatus: latestGeneration?.status ?? null,
+      backupStatus:
+        latestBackup !== null && latestBackup.projectId === project.id ? latestBackup.status : null,
+    }
+  }
+
+  const { snapshot, view } = progress
   return {
     id: project.id,
     name: project.name,
     repository: `${project.repoOwner}/${project.repoName}`,
     repositoryUrl: project.repoUrl,
-    lastCommitSha: getLatestCommit(db, project.id)?.sha ?? null,
-    progressStatus: null,
-    currentPosition: null,
-    completedItems: [],
-    nextActions: [],
-    generationStatus: null,
-    backupStatus: null,
+    lastCommitSha: snapshot.commitSha,
+    progressStatus: view.recoveryStatus,
+    currentPosition:
+      view.currentPosition.status === 'needs_input' ? null : view.currentPosition.text,
+    completedItems:
+      view.completedItems.status === 'needs_input'
+        ? []
+        : view.completedItems.items.map((item) => item.text),
+    nextActions:
+      view.nextActions.status === 'needs_input'
+        ? []
+        : view.nextActions.items.map((item) => item.text),
+    generationStatus: latestGeneration?.status ?? null,
+    backupStatus:
+      latestBackup !== null && latestBackup.projectId === project.id ? latestBackup.status : null,
   }
 }
 

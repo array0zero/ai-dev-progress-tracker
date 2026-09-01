@@ -161,6 +161,25 @@ export interface SnapshotView {
   evidenceIds: string[]
 }
 
+export interface LatestProgress {
+  snapshot: ProgressSnapshotRecord
+  view: SnapshotView
+}
+
+/**
+ * dashboard/detail が採用する最新 snapshot とその展開 view を返す。
+ * DESIGN.md: `commits.detected_at DESC, progress_snapshots.created_at DESC` の先頭。
+ * 形式不正 snapshot は null (整合性 error は呼び出し側で扱う)。
+ */
+export function getLatestProgress(db: Db, projectId: string): LatestProgress | null {
+  const snapshot = getLatestSnapshotByProject(db, projectId)
+  if (snapshot === null) {
+    return null
+  }
+  const view = readSnapshotView(snapshot)
+  return view === null ? null : { snapshot, view }
+}
+
 /** snapshot の 4 JSON field を検証済み構造へ展開する。形式不正なら null。 */
 export function readSnapshotView(snapshot: ProgressSnapshotRecord): SnapshotView | null {
   const currentPosition = textFieldSchema.safeParse(snapshot.currentPosition)

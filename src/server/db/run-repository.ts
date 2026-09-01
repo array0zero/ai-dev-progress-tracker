@@ -247,6 +247,10 @@ export function markRunFailed(
   markRunTerminal(db, runId, 'failed', errorCode, errorMessage, now)
 }
 
+export function recordCodexCliVersion(db: Db, runId: string, version: string): void {
+  db.prepare('UPDATE generation_runs SET ai_cli_version = ? WHERE id = ?').run(version, runId)
+}
+
 /** 対象scopeの running run をまとめて failed にする (stale lease 回収時など)。 */
 export function failRunningGenerationRuns(
   db: Db,

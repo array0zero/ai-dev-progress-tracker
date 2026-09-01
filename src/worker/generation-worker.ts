@@ -3,6 +3,7 @@ import { getLease, heartbeatLease, releaseLease } from '../server/db/lease-repos
 import {
   claimNextQueuedGenerationRun,
   type GenerationRunRecord,
+  getRunById,
   hasQueuedGenerationRuns,
   markRunFailed,
 } from '../server/db/run-repository.js'
@@ -62,6 +63,11 @@ export async function processGenerationQueue(
       await handler(db, run)
     } catch (error) {
       markRunFailed(db, run.id, 'GENERATION_FAILED', String(error).slice(0, 500), now())
+    }
+
+    // handler が run を終端しなかった場合の安全弁。
+    if (getRunById(db, run.id)?.status === 'running') {
+      markRunFailed(db, run.id, 'GENERATION_INCOMPLETE', 'handler did not finalize the run', now())
     }
   }
 }

@@ -7,6 +7,7 @@ import type { Db } from '../../src/server/db/connection.js'
 import { getLease } from '../../src/server/db/lease-repository.js'
 import {
   countRunEvidence,
+  getLatestSnapshotByProject,
   listRunEvidencePayloads,
 } from '../../src/server/db/progress-repository.js'
 import {
@@ -17,11 +18,14 @@ import {
 } from '../../src/server/db/run-repository.js'
 import {
   collectEvidenceBundle,
+  type EvidenceBundle,
   enqueueGeneration,
   generationScope,
+  runGeneration,
 } from '../../src/server/services/generation-service.js'
 import { registerProject } from '../../src/server/services/project-service.js'
 import { processGenerationQueue } from '../../src/worker/generation-worker.js'
+import { createFakeCodex, type FakeCodex } from '../helpers/fake-codex.js'
 import { createFakeGh, type FakeGh } from '../helpers/fake-gh.js'
 import { createTempRepo, type TempRepo } from '../helpers/temp-repo.js'
 import { createTestDb, type TestDb } from '../helpers/test-db.js'
@@ -80,10 +84,45 @@ async function seedCommitFromRepo(
   })
 }
 
+function evidenceId(bundle: EvidenceBundle, kind: 'commit' | 'issue' | 'pull_request'): string {
+  const item = bundle.evidence.find((entry) => entry.kind === kind)
+  if (item === undefined) {
+    throw new Error(`no ${kind} evidence in bundle`)
+  }
+  return item.id
+}
+
+const needsInputText = { status: 'needs_input', text: '要補完', evidenceIds: [] }
+const needsInputList = { status: 'needs_input', items: [], evidenceIds: [] }
+
+function confirmedText(id: string): Record<string, unknown> {
+  return { status: 'confirmed', text: '現在の作業内容', evidenceIds: [id] }
+}
+function confirmedList(id: string): Record<string, unknown> {
+  return { status: 'confirmed', items: [{ text: '項目', evidenceIds: [id] }], evidenceIds: [id] }
+}
+function confirmedDecisions(id: string): Record<string, unknown> {
+  return {
+    status: 'confirmed',
+    items: [{ decision: '採用', rationale: '理由', evidenceIds: [id] }],
+    evidenceIds: [id],
+  }
+}
+
 describe('commit generation flow', () => {
   let ctx: TestDb
   let repo: TempRepo
   let fake: FakeGh
+  const codexFakes: FakeCodex[] = []
+
+  function useFakeCodex(config: Parameters<typeof createFakeCodex>[0]): FakeCodex {
+    const codex = createFakeCodex(config)
+    codexFakes.push(codex)
+    for (const [key, value] of Object.entries(codex.env)) {
+      vi.stubEnv(key, value)
+    }
+    return codex
+  }
 
   beforeEach(() => {
     ctx = createTestDb()
@@ -141,6 +180,9 @@ describe('commit generation flow', () => {
 
   afterEach(() => {
     vi.unstubAllEnvs()
+    while (codexFakes.length > 0) {
+      codexFakes.pop()?.cleanup()
+    }
     fake.cleanup()
     repo.cleanup()
     ctx.cleanup()
@@ -357,5 +399,201 @@ describe('commit generation flow', () => {
     const persisted = JSON.stringify(listRunEvidencePayloads(ctx.db, run.id))
     expect(persisted).not.toContain('ghp_0123456789abcdefghijABCDEFGHIJKL')
     expect(persisted).not.toContain('OTHER_REPO_LEAK')
+  })
+
+  async function seedRunForHead(projectId: string, detectedAt?: string): Promise<string> {
+    writeFileSync(join(repo.root, `f-${Date.now()}-${Math.random()}.txt`), 'change\n')
+    repo.git('add', '.')
+    repo.git('commit', '-m', 'a commit')
+    const headSha = repo.git('rev-parse', 'HEAD')
+    await seedCommitFromRepo(ctx.db, projectId, repo, headSha)
+    if (detectedAt !== undefined) {
+      ctx.db
+        .prepare('UPDATE commits SET detected_at = ? WHERE project_id = ? AND sha = ?')
+        .run(detectedAt, projectId, headSha)
+    }
+    const enqueued = enqueueGeneration(ctx.db, {
+      projectId,
+      sha: headSha,
+      mode: 'generation',
+      trigger: 'post_commit',
+    })
+    return enqueued.runId
+  }
+
+  it('saves a complete snapshot and marks the run succeeded for 4/4 confirmed output', async () => {
+    const projectId = await registerTempProject(ctx.db, repo, 'acme/widget')
+    const runId = await seedRunForHead(projectId)
+    const run = getRunById(ctx.db, runId)
+    if (run === null) {
+      throw new Error('run missing')
+    }
+    const bundle = await collectEvidenceBundle(ctx.db, run)
+    const ev = evidenceId(bundle, 'commit')
+
+    useFakeCodex({
+      output: {
+        schemaVersion: 1,
+        currentPosition: confirmedText(ev),
+        completedItems: confirmedList(ev),
+        nextActions: confirmedList(ev),
+        importantDecisions: confirmedDecisions(ev),
+      },
+    })
+
+    await runGeneration(ctx.db, run)
+
+    expect(getRunById(ctx.db, runId)?.status).toBe('succeeded')
+    const snapshot = getLatestSnapshotByProject(ctx.db, projectId)
+    expect(snapshot?.recoveryStatus).toBe('complete')
+    expect(snapshot?.currentPosition).toMatchObject({ status: 'confirmed' })
+  })
+
+  it('marks the run partial for a 3 confirmed + 1 needs_input output', async () => {
+    const projectId = await registerTempProject(ctx.db, repo, 'acme/widget')
+    const runId = await seedRunForHead(projectId)
+    const run = getRunById(ctx.db, runId)
+    if (run === null) {
+      throw new Error('run missing')
+    }
+    const ev = evidenceId(await collectEvidenceBundle(ctx.db, run), 'commit')
+
+    useFakeCodex({
+      output: {
+        schemaVersion: 1,
+        currentPosition: confirmedText(ev),
+        completedItems: confirmedList(ev),
+        nextActions: confirmedList(ev),
+        importantDecisions: needsInputList,
+      },
+    })
+
+    await runGeneration(ctx.db, run)
+
+    expect(getRunById(ctx.db, runId)?.status).toBe('partial')
+    expect(getLatestSnapshotByProject(ctx.db, projectId)?.recoveryStatus).toBe('partial')
+  })
+
+  it('marks the run unrecoverable for a 0 confirmed output', async () => {
+    const projectId = await registerTempProject(ctx.db, repo, 'acme/widget')
+    const runId = await seedRunForHead(projectId)
+    const run = getRunById(ctx.db, runId)
+    if (run === null) {
+      throw new Error('run missing')
+    }
+    useFakeCodex({
+      output: {
+        schemaVersion: 1,
+        currentPosition: needsInputText,
+        completedItems: needsInputList,
+        nextActions: needsInputList,
+        importantDecisions: needsInputList,
+      },
+    })
+
+    await runGeneration(ctx.db, run)
+
+    expect(getRunById(ctx.db, runId)?.status).toBe('unrecoverable')
+    expect(getLatestSnapshotByProject(ctx.db, projectId)?.recoveryStatus).toBe('unrecoverable')
+  })
+
+  it('does not create a snapshot when Codex exits non-zero', async () => {
+    const projectId = await registerTempProject(ctx.db, repo, 'acme/widget')
+    const runId = await seedRunForHead(projectId)
+    const run = getRunById(ctx.db, runId)
+    if (run === null) {
+      throw new Error('run missing')
+    }
+    useFakeCodex({ execExitCode: 1 })
+
+    await runGeneration(ctx.db, run)
+
+    expect(getRunById(ctx.db, runId)?.status).toBe('failed')
+    expect(getLatestSnapshotByProject(ctx.db, projectId)).toBeNull()
+  })
+
+  it('does not treat invalid JSON output as success', async () => {
+    const projectId = await registerTempProject(ctx.db, repo, 'acme/widget')
+    const runId = await seedRunForHead(projectId)
+    const run = getRunById(ctx.db, runId)
+    if (run === null) {
+      throw new Error('run missing')
+    }
+    useFakeCodex({ outputRaw: '{ not json' })
+
+    await runGeneration(ctx.db, run)
+
+    expect(getRunById(ctx.db, runId)?.status).toBe('failed')
+    expect(getLatestSnapshotByProject(ctx.db, projectId)).toBeNull()
+  })
+
+  it('keeps the newest commit reflected when an older commit run completes later', async () => {
+    const projectId = await registerTempProject(ctx.db, repo, 'acme/widget')
+
+    const oldRunId = await seedRunForHead(projectId, '2026-09-01T00:00:00.000Z')
+    const newRunId = await seedRunForHead(projectId, '2026-09-02T00:00:00.000Z')
+    const oldRun = getRunById(ctx.db, oldRunId)
+    const newRun = getRunById(ctx.db, newRunId)
+    if (oldRun === null || newRun === null) {
+      throw new Error('run missing')
+    }
+
+    const newEv = evidenceId(await collectEvidenceBundle(ctx.db, newRun), 'commit')
+    useFakeCodex({
+      output: {
+        schemaVersion: 1,
+        currentPosition: confirmedText(newEv),
+        completedItems: confirmedList(newEv),
+        nextActions: confirmedList(newEv),
+        importantDecisions: confirmedDecisions(newEv),
+      },
+    })
+    await runGeneration(ctx.db, newRun)
+    const reflectedAfterNew = getLatestSnapshotByProject(ctx.db, projectId)?.commitSha
+
+    const oldEv = evidenceId(await collectEvidenceBundle(ctx.db, oldRun), 'commit')
+    useFakeCodex({
+      output: {
+        schemaVersion: 1,
+        currentPosition: confirmedText(oldEv),
+        completedItems: confirmedList(oldEv),
+        nextActions: confirmedList(oldEv),
+        importantDecisions: confirmedDecisions(oldEv),
+      },
+    })
+    await runGeneration(ctx.db, oldRun)
+
+    expect(getLatestSnapshotByProject(ctx.db, projectId)?.commitSha).toBe(reflectedAfterNew)
+    expect(getLatestSnapshotByProject(ctx.db, projectId)?.commitSha).toBe(newRun.commitSha)
+  })
+
+  it('does not add a generation run when the same commit is re-triggered (push shape)', async () => {
+    const projectId = await registerTempProject(ctx.db, repo, 'acme/widget')
+    const runId = await seedRunForHead(projectId)
+    const run = getRunById(ctx.db, runId)
+    if (run === null) {
+      throw new Error('run missing')
+    }
+    const ev = evidenceId(await collectEvidenceBundle(ctx.db, run), 'commit')
+    useFakeCodex({
+      output: {
+        schemaVersion: 1,
+        currentPosition: confirmedText(ev),
+        completedItems: confirmedList(ev),
+        nextActions: confirmedList(ev),
+        importantDecisions: confirmedDecisions(ev),
+      },
+    })
+    await runGeneration(ctx.db, run)
+    const countAfterGeneration = listRunsByProject(ctx.db, projectId).length
+
+    // push で同一 commit が再び enqueue されても run 数は増えない
+    enqueueGeneration(ctx.db, {
+      projectId,
+      sha: run.commitSha,
+      mode: 'generation',
+      trigger: 'post_commit',
+    })
+    expect(listRunsByProject(ctx.db, projectId).length).toBe(countAfterGeneration)
   })
 })

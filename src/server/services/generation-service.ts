@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
+import type { ProgressRecoveryStatus } from '../../shared/domain.js'
 import { checkCodexReady, runCodexGeneration } from '../adapters/codex.js'
 import { getCommitShow } from '../adapters/git.js'
 import { listIssues, listPullRequests } from '../adapters/github.js'
@@ -9,6 +10,7 @@ import { LEASE_STALE_MS, releaseLease } from '../db/lease-repository.js'
 import {
   type EvidenceKind,
   getLatestSnapshotByProject,
+  insertSnapshot,
   linkRunEvidence,
   type NewEvidence,
   upsertEvidence,
@@ -23,8 +25,10 @@ import {
   getCommitRecord,
   insertRun,
   markRunFailed,
+  markRunTerminal,
+  recordCodexCliVersion,
 } from '../db/run-repository.js'
-import { validateProgressOutput } from '../schemas/progress.js'
+import { type ProgressOutput, validateProgressOutput } from '../schemas/progress.js'
 import { redactHighConfidenceSecrets } from '../security/redaction.js'
 
 export interface EnqueueGenerationParams {
@@ -344,11 +348,57 @@ export async function runGeneration(db: Db, run: GenerationRunRecord): Promise<v
     return
   }
 
-  // T011: valid output を progress snapshot へ transaction 保存し、confirmed 数で分類する。
-  markRunFailed(
-    db,
-    run.id,
-    'SNAPSHOT_PERSIST_PENDING',
-    'Codex output validated; snapshot persistence lands in T011.',
-  )
+  persistSnapshot(db, run, validation.progress, validation.confirmedCount, ready.version)
+}
+
+interface Classification {
+  runStatus: 'succeeded' | 'partial' | 'unrecoverable'
+  recoveryStatus: ProgressRecoveryStatus
+}
+
+/** DESIGN.md: confirmed 数 4 -> complete、1..3 -> partial、0 -> unrecoverable。 */
+export function classifyByConfirmedCount(confirmedCount: number): Classification {
+  if (confirmedCount >= 4) {
+    return { runStatus: 'succeeded', recoveryStatus: 'complete' }
+  }
+  if (confirmedCount >= 1) {
+    return { runStatus: 'partial', recoveryStatus: 'partial' }
+  }
+  return { runStatus: 'unrecoverable', recoveryStatus: 'unrecoverable' }
+}
+
+/** valid output を 1 transaction で snapshot 保存 + run を分類終端する。 */
+export function persistSnapshot(
+  db: Db,
+  run: GenerationRunRecord,
+  progress: ProgressOutput,
+  confirmedCount: number,
+  aiCliVersion: string | null,
+  now: () => Date = () => new Date(),
+): Classification {
+  const classification = classifyByConfirmedCount(confirmedCount)
+  const timestamp = now()
+  const save = db.transaction((): void => {
+    if (aiCliVersion !== null) {
+      recordCodexCliVersion(db, run.id, aiCliVersion)
+    }
+    insertSnapshot(
+      db,
+      {
+        id: randomUUID(),
+        generationRunId: run.id,
+        projectId: run.projectId,
+        commitSha: run.commitSha,
+        recoveryStatus: classification.recoveryStatus,
+        currentPosition: progress.currentPosition,
+        completedItems: progress.completedItems,
+        nextActions: progress.nextActions,
+        decisions: progress.importantDecisions,
+      },
+      timestamp,
+    )
+    markRunTerminal(db, run.id, classification.runStatus, null, null, timestamp)
+  })
+  save()
+  return classification
 }
