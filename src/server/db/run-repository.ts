@@ -170,3 +170,94 @@ export function listRunsByProject(db: Db, projectId: string): GenerationRunRecor
     .all(projectId) as GenerationRunRow[]
   return rows.map(rowToRun)
 }
+
+export function getLatestGenerationRun(db: Db, projectId: string): GenerationRunRecord | null {
+  const row = db
+    .prepare(
+      `SELECT ${SELECT_COLUMNS} FROM generation_runs WHERE project_id = ? ORDER BY detected_at DESC, id DESC LIMIT 1`,
+    )
+    .get(projectId) as GenerationRunRow | undefined
+  return row === undefined ? null : rowToRun(row)
+}
+
+export function hasQueuedGenerationRuns(db: Db, projectId: string): boolean {
+  return (
+    db
+      .prepare("SELECT 1 FROM generation_runs WHERE project_id = ? AND status = 'queued' LIMIT 1")
+      .get(projectId) !== undefined
+  )
+}
+
+/**
+ * 対象projectの queued run を `detected_at ASC, id ASC` で 1 件だけ atomic に running へ遷移して返す。
+ * 取れなければ null。
+ */
+export function claimNextQueuedGenerationRun(
+  db: Db,
+  projectId: string,
+  now: Date = new Date(),
+): GenerationRunRecord | null {
+  const claim = db.transaction((): GenerationRunRecord | null => {
+    const row = db
+      .prepare(
+        `SELECT ${SELECT_COLUMNS} FROM generation_runs
+         WHERE project_id = ? AND status = 'queued'
+         ORDER BY detected_at ASC, id ASC LIMIT 1`,
+      )
+      .get(projectId) as GenerationRunRow | undefined
+    if (row === undefined) {
+      return null
+    }
+    const startedAt = now.toISOString()
+    const updated = db
+      .prepare(
+        "UPDATE generation_runs SET status = 'running', started_at = ? WHERE id = ? AND status = 'queued'",
+      )
+      .run(startedAt, row.id)
+    if (updated.changes !== 1) {
+      return null
+    }
+    return rowToRun({ ...row, status: 'running', started_at: startedAt })
+  })
+  return claim()
+}
+
+type TerminalGenerationStatus = 'succeeded' | 'partial' | 'unrecoverable' | 'failed'
+
+export function markRunTerminal(
+  db: Db,
+  runId: string,
+  status: TerminalGenerationStatus,
+  errorCode: string | null = null,
+  errorMessage: string | null = null,
+  now: Date = new Date(),
+): void {
+  db.prepare(
+    'UPDATE generation_runs SET status = ?, error_code = ?, error_message = ?, finished_at = ? WHERE id = ?',
+  ).run(status, errorCode, errorMessage, now.toISOString(), runId)
+}
+
+export function markRunFailed(
+  db: Db,
+  runId: string,
+  errorCode: string,
+  errorMessage: string | null = null,
+  now: Date = new Date(),
+): void {
+  markRunTerminal(db, runId, 'failed', errorCode, errorMessage, now)
+}
+
+/** 対象scopeの running run をまとめて failed にする (stale lease 回収時など)。 */
+export function failRunningGenerationRuns(
+  db: Db,
+  projectId: string,
+  errorCode: string,
+  now: Date = new Date(),
+): number {
+  const result = db
+    .prepare(
+      "UPDATE generation_runs SET status = 'failed', error_code = ?, finished_at = ? WHERE project_id = ? AND status = 'running'",
+    )
+    .run(errorCode, now.toISOString(), projectId)
+  return result.changes
+}
