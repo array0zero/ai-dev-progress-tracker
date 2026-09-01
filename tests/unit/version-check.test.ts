@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vitest'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { delimiter, join } from 'node:path'
+import { describe, expect, it, vi } from 'vitest'
 import { runProcess } from '../../src/server/adapters/process-runner.js'
 import { checkVersion, extractVersion, VERSION_REQUIREMENTS } from '../../src/server/config.js'
 
@@ -95,5 +98,32 @@ describe('runProcess', () => {
       { timeoutMs: 5_000, input: 'abc' },
     )
     expect(result.stdout).toBe('ABC')
+  })
+})
+
+describe.skipIf(process.platform !== 'win32')('runProcess on Windows', () => {
+  it('runs a .cmd shim resolved from PATH with shell:false', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'adpt-cmd-'))
+    // npm が作る CLI shim と同型: 引数を素通しして node へ渡す .cmd
+    writeFileSync(join(dir, 'faketool.cmd'), '@echo off\r\nnode "%~dp0faketool.mjs" %*\r\n')
+    writeFileSync(
+      join(dir, 'faketool.mjs'),
+      'process.stdout.write("faketool " + process.argv.slice(2).join(" "))\n',
+    )
+    vi.stubEnv('PATH', `${dir}${delimiter}${process.env.PATH ?? ''}`)
+    try {
+      const result = await runProcess('faketool', ['--version'], { timeoutMs: 10_000 })
+      expect(result.code).toBe(0)
+      expect(result.stdout.trim()).toBe('faketool --version')
+    } finally {
+      vi.unstubAllEnvs()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('reports a spawn failure (unresolvable command) via a rejected promise', async () => {
+    await expect(
+      runProcess('adpt-no-such-command-xyz', ['--version'], { timeoutMs: 5_000 }),
+    ).rejects.toBeInstanceOf(Error)
   })
 })

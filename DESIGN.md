@@ -1,9 +1,16 @@
 # DESIGN.md — 設計書
 
 project_id: ai-dev-progress-tracker  
-version: 1.2  
+version: 1.3  
 date: 2026-09-01  
-source: PLAN.md v1.2 + 実機検証結果（2026-09-01）
+source: PLAN.md v1.2 + 実機検証結果（2026-09-01）+ Windows実機不具合修正（2026-09-01）
+
+## v1.3変更点
+
+- Windows実機で `codex` の実体が `.cmd` shim のため `spawn(shell:false)` で起動できず、進捗生成が全て失敗する不具合を修正。
+- process runnerを、Windowsで `PATH` + `PATHEXT` から実体を解決し、`.cmd` / `.bat` shim は `%ComSpec% /d /s /c` 経由で（それでもshellを介さず）起動するように変更。`gh` / `git` / `codex` すべてこの経路を共有する。
+- Codex実行直前検査で「versionを取得できなかった（spawn失敗 / timeout / 非0終了）」場合を `CODEX_VERSION_CHECK_FAILED`、認証状態を取得できなかった場合を `CODEX_AUTH_CHECK_FAILED` として、`CODEX_VERSION_UNSUPPORTED`（取得できたが下限未満）/ `VERSION_PARSE_ERROR`（取得できたが抽出不能）と区別する。
+- 設計判断ログにD021を追加。
 
 ## v1.2変更点
 
@@ -280,7 +287,30 @@ gh      -> GH_VERSION_UNSUPPORTED
 Codex   -> CODEX_VERSION_UNSUPPORTED
 ```
 
+Codex実行直前検査は、以下を区別する。
+
+```text
+CODEX_VERSION_CHECK_FAILED -> `codex --version` を実行できなかった（spawn失敗 / timeout / 非0終了）
+VERSION_PARSE_ERROR        -> 実行できたが出力から MAJOR.MINOR.PATCH を抽出できない
+CODEX_VERSION_UNSUPPORTED  -> versionを抽出できたが `>=0.146.0` を満たさない
+CODEX_AUTH_CHECK_FAILED    -> `codex login status` を実行できなかった（spawn失敗 / timeout）
+AI_AUTH_NOT_CHATGPT        -> ChatGPT認証ではない（API key認証）
+CODEX_AUTH_REQUIRED        -> 未ログイン
+```
+
 `codex login status`がAPI key認証を示す場合は`AI_AUTH_NOT_CHATGPT`として標準経路を停止する。
+
+### 外部CLIのプロセス起動（全OS共通）
+
+外部CLI（`git` / `gh` / `codex`）は共通の process runner から起動し、shellは介さない（`spawn` の `shell:false`）。
+Windowsでは `spawn(shell:false)` が `.cmd` / `.bat` を直接起動できない（Node CVE-2024-27980対応）ため、process runnerが次を行う。
+
+1. コマンドが素の名前（パス区切り・拡張子なし）なら `PATH` × `PATHEXT` から実体を解決する。
+2. 実体が `.exe` / `.com` なら解決した絶対パスを直接 `spawn` する。
+3. 実体が `.cmd` / `.bat`（npm等が作るshim）なら `%ComSpec% /d /s /c "<実体> <エスケープ済み引数>"` を `windowsVerbatimArguments:true` で `spawn` する（cmd.exe自体は `.exe` なので `shell:false` のまま起動できる）。引数エスケープはcross-spawn相当。
+4. 解決できなければ従来どおり `spawn` に委ね、`error` イベントで失敗させる。
+
+非Windowsでは従来どおりコマンド名をそのまま `spawn` する。
 
 ### 対応OS
 
@@ -835,9 +865,11 @@ ProjectSummaryに以下を追加する。
 | 422 | NODE_VERSION_UNSUPPORTED | Node.jsが`>=24.15.0 <25`を満たさない |
 | 422 | GIT_VERSION_UNSUPPORTED | Gitが`>=2.45.0`を満たさない |
 | 422 | GH_VERSION_UNSUPPORTED | ghが`>=2.98.0`を満たさない |
-| 422 | CODEX_VERSION_UNSUPPORTED | Codex CLIが`>=0.146.0`を満たさない |
+| 422 | CODEX_VERSION_UNSUPPORTED | Codex CLI versionを取得できたが`>=0.146.0`を満たさない |
+| 422 | CODEX_VERSION_CHECK_FAILED | `codex --version`を実行できない（spawn失敗 / timeout / 非0終了） |
 | 422 | VERSION_PARSE_ERROR | version文字列から`MAJOR.MINOR.PATCH`を抽出できない |
 | 422 | CODEX_AUTH_REQUIRED | Codex未ログイン |
+| 422 | CODEX_AUTH_CHECK_FAILED | `codex login status`を実行できない（spawn失敗 / timeout） |
 | 422 | AI_AUTH_NOT_CHATGPT | CodexがChatGPT認証でない |
 | 500 | INTERNAL_ERROR | その他 |
 
@@ -1427,6 +1459,7 @@ DB:
 | D018 | runtime/CLI version policy | Node `>=24.15.0 <25`、Git `>=2.45.0`、gh `>=2.98.0`、Codex `>=0.146.0` | 実機検証差分をv1.1へ反映 | — |
 | D019 | 依存install script許可 | npm `12.0.2`が既定でblockするため`package.json`の`allowScripts`で`better-sqlite3`と`esbuild`のみバージョンピン許可 | native/build依存を`npm ci`で動作させつつ許可対象を最小化する | 全script許可（却下: 攻撃面拡大）／native依存を別実装へ差し替え（却下: DESIGN技術選定固定） |
 | D020 | better-sqlite3の型定義 | 型定義専用パッケージ`@types/better-sqlite3@9.6.0`を`devDependencies`へ追加 | `better-sqlite3`は型を同梱せず、`strict`前提のtypecheckに型が必須。ランタイム挙動は不変 | 手書きambient宣言（却下: 保守コスト増・不正確）／`any`許容（却下: 規約でany禁止） |
+| D021 | Windowsでの外部CLI起動と検査失敗の切り分け | process runnerが`PATH`+`PATHEXT`で実体を解決し、`.cmd`/`.bat` shimは`%ComSpec% /d /s /c`経由で（shellなしで）起動する。Codex検査は「実行不能」を`CODEX_VERSION_CHECK_FAILED`/`CODEX_AUTH_CHECK_FAILED`、「下限未満」を`CODEX_VERSION_UNSUPPORTED`として別コードで返す | Windowsではnpm製CLI（`codex`）が`.cmd` shimで、`spawn(shell:false)`が直接起動できずCVE-2024-27980で拒否される。実行不能と下限未満を同一コードにすると実機での原因切り分けができない | `shell:true`（却下: DESIGNの`shell:false`固定に反する）／実行時にnpm globalの`codex.js`実体を推測（却下: npm版差で壊れやすい）／`cross-spawn`依存追加（却下: 追加npm package最小化方針。相当ロジックを内製） |
 
 ---
 

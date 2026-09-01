@@ -5,6 +5,8 @@ import { join } from 'node:path'
 export interface FakeCodexConfig {
   /** `codex --version` の出力 */
   version?: string
+  /** `codex --version` の exit code (0 以外なら取得失敗扱い) */
+  versionExitCode?: number
   /** `codex login status` の認証モード */
   authMode?: 'chatgpt' | 'apikey' | 'none'
   /** exec の exit code (0 以外なら失敗) */
@@ -34,7 +36,7 @@ appendFileSync(process.env.FAKE_CODEX_CALLS, JSON.stringify(argv) + '\\n')
 
 if (argv.includes('--version')) {
   process.stdout.write((cfg.version ?? 'codex-cli 0.146.0') + '\\n')
-  process.exit(0)
+  process.exit(cfg.versionExitCode ?? 0)
 }
 
 if (argv[0] === 'login' && argv[1] === 'status') {

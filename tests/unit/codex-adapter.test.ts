@@ -29,10 +29,27 @@ describe('codex adapter', () => {
     }
   })
 
-  it('rejects Codex 0.145.9 before exec with CODEX_VERSION_UNSUPPORTED', async () => {
+  it('rejects Codex 0.145.9 before exec with CODEX_VERSION_UNSUPPORTED (version obtained, below minimum)', async () => {
     fakeCodex({ version: 'codex-cli 0.145.9', authMode: 'chatgpt' })
     const result = await checkCodexReady()
     expect(result).toEqual({ ok: false, code: 'CODEX_VERSION_UNSUPPORTED' })
+  })
+
+  it('reports CODEX_VERSION_CHECK_FAILED when `codex` cannot be executed at all', async () => {
+    // 実体のないパスを bin に指定 → spawn error
+    vi.stubEnv('TRACKER_CODEX_BIN', '/no/such/codex-binary-xyz')
+    vi.stubEnv('TRACKER_CODEX_ARGS', '')
+    expect(await checkCodexReady()).toEqual({ ok: false, code: 'CODEX_VERSION_CHECK_FAILED' })
+  })
+
+  it('reports CODEX_VERSION_CHECK_FAILED when `codex --version` exits non-zero', async () => {
+    fakeCodex({ version: 'codex-cli 0.146.0', versionExitCode: 3, authMode: 'chatgpt' })
+    expect(await checkCodexReady()).toEqual({ ok: false, code: 'CODEX_VERSION_CHECK_FAILED' })
+  })
+
+  it('reports VERSION_PARSE_ERROR when the version output has no MAJOR.MINOR.PATCH', async () => {
+    fakeCodex({ version: 'codex latest (nightly build)', authMode: 'chatgpt' })
+    expect(await checkCodexReady()).toEqual({ ok: false, code: 'VERSION_PARSE_ERROR' })
   })
 
   it('passes the version check for 0.146.0 and 0.147.0 with ChatGPT auth', async () => {

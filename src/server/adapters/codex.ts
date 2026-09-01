@@ -40,8 +40,19 @@ export function progressSchemaPath(): string {
 export type CodexReadyResult = { ok: true; version: string } | { ok: false; code: string }
 
 /**
+ * `codex` を実行できなかった (spawn 失敗 / timeout / 非 0 終了)。
+ * 「version を取得できた上で下限未満」の CODEX_VERSION_UNSUPPORTED / CODEX_AUTH_* とは区別する。
+ */
+export const CODEX_VERSION_CHECK_FAILED = 'CODEX_VERSION_CHECK_FAILED'
+export const CODEX_AUTH_CHECK_FAILED = 'CODEX_AUTH_CHECK_FAILED'
+
+/**
  * Codex 実行直前の検査。version 下限 (>=0.146.0) → ChatGPT 認証の順で確認する。
  * raw 出力は保持・表示しない。
+ * - 実行自体に失敗: CODEX_VERSION_CHECK_FAILED / CODEX_AUTH_CHECK_FAILED
+ * - 実行できたが出力から version を抽出不能: VERSION_PARSE_ERROR
+ * - version を抽出できたが下限未満: CODEX_VERSION_UNSUPPORTED
+ * - ChatGPT 認証でない: AI_AUTH_NOT_CHATGPT / 未ログイン: CODEX_AUTH_REQUIRED
  */
 export async function checkCodexReady(): Promise<CodexReadyResult> {
   const codex = resolveCodex()
@@ -52,10 +63,10 @@ export async function checkCodexReady(): Promise<CodexReadyResult> {
       timeoutMs: VERSION_TIMEOUT_MS,
     })
   } catch {
-    return { ok: false, code: 'CODEX_VERSION_UNSUPPORTED' }
+    return { ok: false, code: CODEX_VERSION_CHECK_FAILED }
   }
-  if (versionRun.timedOut) {
-    return { ok: false, code: 'CODEX_VERSION_UNSUPPORTED' }
+  if (versionRun.timedOut || versionRun.code !== 0) {
+    return { ok: false, code: CODEX_VERSION_CHECK_FAILED }
   }
   const check = checkVersion(
     `${versionRun.stdout}\n${versionRun.stderr}`,
@@ -71,8 +82,12 @@ export async function checkCodexReady(): Promise<CodexReadyResult> {
       timeoutMs: AUTH_TIMEOUT_MS,
     })
   } catch {
-    return { ok: false, code: 'CODEX_AUTH_REQUIRED' }
+    return { ok: false, code: CODEX_AUTH_CHECK_FAILED }
   }
+  if (authRun.timedOut) {
+    return { ok: false, code: CODEX_AUTH_CHECK_FAILED }
+  }
+  // `codex login status` は未ログイン時に非 0 終了しうるので exit code では判定しない。
   const combined = `${authRun.stdout}\n${authRun.stderr}`
   if (CHATGPT_MARKER.test(combined)) {
     return { ok: true, version: check.version.join('.') }
