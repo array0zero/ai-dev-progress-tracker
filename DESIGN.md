@@ -1,9 +1,16 @@
 # DESIGN.md — 設計書
 
 project_id: ai-dev-progress-tracker  
-version: 1.5  
+version: 1.6  
 date: 2026-09-01  
-source: PLAN.md v1.2 + 実機検証結果（2026-09-01）+ Windows実機不具合修正（2026-09-01）+ 空backup repo初回同期修正（2026-09-01）+ backup改行変換によるchecksum不一致修正（2026-09-01）
+source: PLAN.md v1.2 + 実機検証結果（2026-09-01）+ Windows実機不具合修正（2026-09-01）+ 空backup repo初回同期修正（2026-09-01）+ backup改行変換によるchecksum不一致修正（2026-09-01）+ generation評価harnessの隔離と期待値是正（2026-09-01）
+
+## v1.6変更点
+
+- `eval-generation.ts`が対象repoに直接commitして呼び出し元のbranch / working treeを汚す問題を修正。HEADから切り出したdetachedな`git worktree`内でのみcommitし、終了時にworktreeごと破棄する。fixtureの`files`は新規ファイル（`docs/eval/<id>.md`）のみに限定。
+- `generation-cases.json`の`expected`を実測へ是正: `importantDecisions`は`confirmed` + 根拠（旧fixtureは誤って`needs_input`を期待）、`nextActions`は単一commitでは根拠不足のため`needs_input`を期待。自然言語生成に脆い`mustContain` / `mustNotContain`のsubstring一致は必須条件から外し任意の補助チェックに変更。
+- 評価pass条件を「status一致 + confirmed fieldは根拠必須 + unknown evidence 0 + start latency <= 60秒」に整理。
+- 設計判断ログにD024を追加。
 
 ## v1.5変更点
 
@@ -1307,20 +1314,24 @@ CIでは実GitHub/Codexを呼ばない。
 `tests/fixtures/generation-cases.json`:
 - 10ケース。
 - 各ケースに`id`, `commitMessage`, `files[{path,content}]`, `expected`を持つ。
-- `expected`はfieldごとの`status`, `mustContain[]`, `mustNotContain[]`, `requiredEvidenceExternalKeys[]`を持つ。
+- `expected`はfieldごとの`status`, `requiredEvidenceExternalKeys[]`を持つ（`mustContain[]` / `mustNotContain[]`は任意の補助チェック。空なら評価しない）。
+- `files`は**新規ファイルのみ**（`docs/eval/<id>.md`など）に書き、既存ソースを上書きしない。
+- `expected`は実測に整合させる: 根拠のあるfield（`currentPosition` / `completedItems` / `importantDecisions`）は`confirmed` + commit evidence（`<commit>`）参照、単一commitでは根拠が乏しい`nextActions`は`needs_input`。これにより「根拠に応じた確定 / 要補完の切り分け」と「過剰生成（根拠なしの`confirmed`）」の双方を検出する。
 
 `tests/fixtures/recovery-cases.json`:
 - 復元可能10ケース。
 - 追加で根拠不足ケース4件。
 - 各ケースに`id`, `evidence[]`, `expectedRecoveryStatus`, fieldごとの`status`, `mustContain[]`, `mustNotContain[]`, `requiredEvidenceExternalKeys[]`を持つ。
 
-評価時の文字列比較はUnicode NFKC正規化後に英字だけlowercase化し、substring一致で判定する。1ケースは以下を全て満たした時だけpass。
+評価時の文字列比較はUnicode NFKC正規化後に英字だけlowercase化し、substring一致で判定する（`mustContain` / `mustNotContain`使用時のみ）。1ケースは以下を全て満たした時だけpass。
 
 1. expected field statusが一致。
-2. 全`mustContain`が対象fieldに存在。
-3. 全`mustNotContain`が対象fieldに存在しない。
-4. `requiredEvidenceExternalKeys`が生成結果のevidence参照に全て含まれる。
-5. unknown evidence IDが0件。
+2. `status=confirmed`のfieldは`requiredEvidenceExternalKeys`を全て参照し、evidenceを1件以上持つ。
+3. `mustContain` / `mustNotContain`が指定されていれば、それを満たす。
+4. unknown evidence IDが0件。
+5. `started_at - detected_at <= 60秒`。
+
+`eval-generation.ts`は評価用commitを、対象repoのHEADから切り出したdetachedな`git worktree`内でのみ作成する。呼び出し元のbranch / working tree / indexは変更せず、終了時に`git worktree remove --force`でworktreeごと破棄する。評価用SQLiteはOS tempに置く。CIでは実行しない。
 
 ### 非機能テスト
 
@@ -1488,6 +1499,7 @@ DB:
 | D020 | better-sqlite3の型定義 | 型定義専用パッケージ`@types/better-sqlite3@9.6.0`を`devDependencies`へ追加 | `better-sqlite3`は型を同梱せず、`strict`前提のtypecheckに型が必須。ランタイム挙動は不変 | 手書きambient宣言（却下: 保守コスト増・不正確）／`any`許容（却下: 規約でany禁止） |
 | D021 | Windowsでの外部CLI起動と検査失敗の切り分け | process runnerが`PATH`+`PATHEXT`で実体を解決し、`.cmd`/`.bat` shimは`%ComSpec% /d /s /c`経由で（shellなしで）起動する。Codex検査は「実行不能」を`CODEX_VERSION_CHECK_FAILED`/`CODEX_AUTH_CHECK_FAILED`、「下限未満」を`CODEX_VERSION_UNSUPPORTED`として別コードで返す | Windowsではnpm製CLI（`codex`）が`.cmd` shimで、`spawn(shell:false)`が直接起動できずCVE-2024-27980で拒否される。実行不能と下限未満を同一コードにすると実機での原因切り分けができない | `shell:true`（却下: DESIGNの`shell:false`固定に反する）／実行時にnpm globalの`codex.js`実体を推測（却下: npm版差で壊れやすい）／`cross-spawn`依存追加（却下: 追加npm package最小化方針。相当ロジックを内製） |
 | D022 | 空backup repoの初回同期 | commitのあるcloneのみ`git pull --ff-only`し、unborn HEAD（`gh repo create`直後の空repoをcloneした状態）ではpullをスキップして初回pushへ進む。pushは`git push -u origin main`、その前に`git symbolic-ref HEAD refs/heads/main`で固定branchへ寄せる | 空repoにはbranch参照が無く`pull --ff-only`が必ず失敗して初回backupが成立しない。空repo判定を`git rev-parse HEAD`の可否で行えば追加のGitHub API呼び出しも不要 | `gh repo create`時に初期commitを作る（却下: ensure処理にclone/commit/pushが増え、visibility検証やmarker検証と手順が交錯する）／`--ff-only`を外して常にpull（却下: 誤ったfast-forwardでないmergeを許容しかねない） |
+| D024 | generation評価harnessの隔離と期待値基準 | 評価用commitは対象repoのHEADから切り出したdetached `git worktree`内でのみ行い、終了時に破棄する。fixtureの`expected`は「根拠のあるfieldは`confirmed` + evidence、根拠の乏しい`nextActions`は`needs_input`」を実測に合わせて固定し、pass条件から自然言語のsubstring一致（`mustContain`）を外す | harnessが対象repoのbranch / working tree / indexへ直接commitすると、評価用repoを誤って指定した場合に実ソースを破壊する（実際に発生）。また旧fixtureは`importantDecisions`に`needs_input`を期待していたが実際は根拠付きで`confirmed`になり、substring一致は同義の別表現で不合格になるため自然言語生成の評価として機能しない | 対象repoで直接commitしstash/resetで戻す（却下: 中断時に復旧しきれず作業を失う恐れ／indexやstashの状態に依存）／別repoをcloneして評価（却下: private repoのissue/PR取得が壊れる、cloneコスト）／`mustContain`を維持し表現ゆれを許容語で吸収（却下: 語彙リストの保守が生成品質と無関係に膨らむ） |
 | D023 | backupファイルの改行変換防止 | backup repo rootに`.gitattributes`（`* -text\n`）を置き、`manifest.json` / `data/backup-v1.json`をbinary扱い（改行変換なし）でcheckoutさせる。既存repoは次回backupで`.gitattributes`を追加commitして置き換え、clone再利用時は`git pull`後`git checkout HEAD -- .`で再展開する | Windowsの`core.autocrlf`がcheckout時にLF→CRLF変換し、生成時`sha256`（LF基準）とclone後byte列が不一致になり`restore`が`BACKUP_CHECKSUM_MISMATCH`で失敗する。ファイル単位の属性指定が最小の是正で、diff表示も不要なbackup用途に適合する | restore側で改行を正規化してからhash（却下: 正当なCRLFを含む値を静かに書き換え、checksumの意味が失われる）／`sha256`計算前にファイルを`\r\n`→`\n`変換（却下: 同上、かつ生成側と検証側でロジックが分岐する）／backupを常にbase64等でencode保存（却下: 人間可読なdeterministic JSONというD012の前提を崩す） |
 
 ---

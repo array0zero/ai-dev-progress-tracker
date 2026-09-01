@@ -4,13 +4,18 @@
  * 使い方:
  *   tsx scripts/eval-generation.ts --repo <absolute-git-root> [--cases <path>] [--out <path>]
  *
+ * PLAN の成功指標「4 項目が根拠付きで生成される」を計測する。
  * fixture の各ケースについて file 変更 -> commit -> generation run terminal 待機を行い、
- * DESIGN.md「必須評価fixture」の 5 規則で pass/fail を判定する。
+ * 4 フィールドが confirmed かつ根拠 (commit evidence) を伴うかで pass/fail を判定する。
  * 各 run の started_at - detected_at <= 60 秒も判定する。
+ *
+ * commit は呼び出し元の branch / working tree / index を汚さないよう、HEAD から切り出した
+ * detached の `git worktree` 内でのみ行い、終了時に worktree ごと破棄する。
  */
 import { execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, isAbsolute, join } from 'node:path'
 import { parseArgs } from 'node:util'
 import { openDatabase } from '../src/server/db/connection.js'
@@ -21,19 +26,34 @@ import { enqueueGeneration, generationScope } from '../src/server/services/gener
 import { processGenerationQueue } from '../src/worker/generation-worker.js'
 
 const LATENCY_LIMIT_SECONDS = 60
+const FIELD_KEYS = [
+  'currentPosition',
+  'completedItems',
+  'nextActions',
+  'importantDecisions',
+] as const
+type FieldKey = (typeof FIELD_KEYS)[number]
 
 interface FieldExpectation {
   status: 'confirmed' | 'needs_input'
-  mustContain: string[]
-  mustNotContain: string[]
   requiredEvidenceExternalKeys: string[]
+  // substring 一致は自然言語生成の評価として脆いため補助扱い。空なら評価しない。
+  mustContain?: string[]
+  mustNotContain?: string[]
 }
 
 interface GenerationCase {
   id: string
   commitMessage: string
   files: Array<{ path: string; content: string }>
-  expected: Record<string, FieldExpectation>
+  expected: Record<FieldKey, FieldExpectation>
+}
+
+interface FieldResult {
+  status: string | null
+  evidenceExternalKeys: string[]
+  /** confirmed かつ根拠 (evidence 参照) を 1 件以上持つ */
+  solid: boolean
 }
 
 interface CaseResult {
@@ -42,6 +62,8 @@ interface CaseResult {
   reasons: string[]
   runStatus: string | null
   errorCode: string | null
+  confirmedFields: number
+  fields: Record<string, FieldResult>
   startLatencySeconds: number | null
   startLatencyWithinLimit: boolean
 }
@@ -85,7 +107,7 @@ function fieldText(field: unknown): string {
   return parts.join('\n')
 }
 
-function fieldEvidenceExternalKeys(field: unknown, idToKey: Map<string, string>): Set<string> {
+function fieldEvidenceIds(field: unknown): string[] {
   const record = asRecord(field)
   const ids: string[] = []
   const collect = (value: unknown): void => {
@@ -105,16 +127,12 @@ function fieldEvidenceExternalKeys(field: unknown, idToKey: Map<string, string>)
       }
     }
   }
-  return new Set(ids.map((id) => idToKey.get(id) ?? id))
+  return ids
 }
 
 function parseCliArgs(): { repo: string; casesPath: string; outPath: string | null } {
   const { values } = parseArgs({
-    options: {
-      repo: { type: 'string' },
-      cases: { type: 'string' },
-      out: { type: 'string' },
-    },
+    options: { repo: { type: 'string' }, cases: { type: 'string' }, out: { type: 'string' } },
     strict: false,
   })
   const repo = typeof values.repo === 'string' ? values.repo : ''
@@ -131,8 +149,8 @@ function parseCliArgs(): { repo: string; casesPath: string; outPath: string | nu
   }
 }
 
-function git(repo: string, ...args: string[]): string {
-  return execFileSync('git', args, { cwd: repo, encoding: 'utf8' }).trim()
+function git(cwd: string, ...args: string[]): string {
+  return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim()
 }
 
 function repoSlug(repo: string): { owner: string; name: string } {
@@ -161,63 +179,70 @@ function judgeField(
   idToKey: Map<string, string>,
   commitSha: string,
   reasons: string[],
-): boolean {
+): FieldResult {
   const status = fieldStatus(field)
+  const externalKeys = [
+    ...new Set(
+      fieldEvidenceIds(field).map((id) => {
+        const k = idToKey.get(id) ?? id
+        return k === commitSha ? '<commit>' : k
+      }),
+    ),
+  ]
+  const solid = status === 'confirmed' && externalKeys.length > 0
+  const result: FieldResult = { status, evidenceExternalKeys: externalKeys, solid }
+
   if (status !== expectation.status) {
     reasons.push(`${key}: status ${status ?? 'missing'} != expected ${expectation.status}`)
-    return false
+  }
+  if (expectation.status === 'confirmed') {
+    for (const required of expectation.requiredEvidenceExternalKeys) {
+      if (!externalKeys.includes(required)) {
+        reasons.push(`${key}: required evidence key ${required} not referenced`)
+      }
+    }
   }
   const text = normalize(fieldText(field))
-  let ok = true
-  for (const needle of expectation.mustContain) {
+  for (const needle of expectation.mustContain ?? []) {
     if (!text.includes(normalize(needle))) {
       reasons.push(`${key}: missing mustContain "${needle}"`)
-      ok = false
     }
   }
-  for (const needle of expectation.mustNotContain) {
+  for (const needle of expectation.mustNotContain ?? []) {
     if (text.includes(normalize(needle))) {
       reasons.push(`${key}: contains mustNotContain "${needle}"`)
-      ok = false
     }
   }
-  const referenced = new Set(
-    [...fieldEvidenceExternalKeys(field, idToKey)].map((k) => (k === commitSha ? '<commit>' : k)),
-  )
-  for (const required of expectation.requiredEvidenceExternalKeys) {
-    if (!referenced.has(required)) {
-      reasons.push(`${key}: required evidence key ${required} not referenced`)
-      ok = false
-    }
-  }
-  return ok
+  return result
 }
 
 async function runCase(
   db: ReturnType<typeof openDatabase>,
-  repo: string,
+  worktree: string,
   projectId: string,
   testCase: GenerationCase,
 ): Promise<CaseResult> {
   for (const file of testCase.files) {
-    const target = join(repo, file.path)
+    const target = join(worktree, file.path)
     mkdirSync(dirname(target), { recursive: true })
     writeFileSync(target, file.content)
   }
-  git(repo, 'add', '-A')
+  git(worktree, 'add', '-A')
   git(
-    repo,
+    worktree,
     '-c',
     'user.email=eval@example.com',
     '-c',
     'user.name=eval',
+    '-c',
+    'commit.gpgsign=false',
     'commit',
     '-m',
     testCase.commitMessage,
     '--allow-empty',
   )
-  const sha = git(repo, 'rev-parse', 'HEAD')
-  const parentSha = git(repo, 'rev-parse', 'HEAD~1')
+  const sha = git(worktree, 'rev-parse', 'HEAD')
+  const parentSha = git(worktree, 'rev-parse', 'HEAD~1')
   const nowIso = new Date().toISOString()
   upsertCommit(db, {
     projectId,
@@ -250,6 +275,11 @@ async function runCase(
     reasons.push('run has no started_at')
   }
 
+  const emptyFields: Record<string, FieldResult> = {}
+  for (const key of FIELD_KEYS) {
+    emptyFields[key] = { status: null, evidenceExternalKeys: [], solid: false }
+  }
+
   if (run === null || run.status === 'failed') {
     reasons.push(`run failed: ${run?.errorCode ?? 'unknown'}`)
     return {
@@ -258,37 +288,39 @@ async function runCase(
       reasons,
       runStatus: run?.status ?? null,
       errorCode: run?.errorCode ?? null,
+      confirmedFields: 0,
+      fields: emptyFields,
       startLatencySeconds: latencySeconds,
       startLatencyWithinLimit: latencyOk,
     }
   }
 
   const snapshot = getLatestSnapshotByProject(db, projectId)
-  let fieldsOk = true
+  const fields: Record<string, FieldResult> = { ...emptyFields }
   if (snapshot === null || snapshot.commitSha !== sha) {
     reasons.push('no snapshot for this commit')
-    fieldsOk = false
   } else {
     const idToKey = evidenceKeyMap(db, projectId)
-    const fields: Record<string, unknown> = {
+    const raw: Record<FieldKey, unknown> = {
       currentPosition: snapshot.currentPosition,
       completedItems: snapshot.completedItems,
       nextActions: snapshot.nextActions,
       importantDecisions: snapshot.decisions,
     }
-    for (const [key, expectation] of Object.entries(testCase.expected)) {
-      if (!judgeField(key, expectation, fields[key], idToKey, sha, reasons)) {
-        fieldsOk = false
-      }
+    for (const key of FIELD_KEYS) {
+      fields[key] = judgeField(key, testCase.expected[key], raw[key], idToKey, sha, reasons)
     }
   }
 
+  const confirmedFields = Object.values(fields).filter((f) => f.solid).length
   return {
     id: testCase.id,
-    pass: fieldsOk && latencyOk,
+    pass: reasons.length === 0,
     reasons,
     runStatus: run.status,
     errorCode: run.errorCode,
+    confirmedFields,
+    fields,
     startLatencySeconds: latencySeconds,
     startLatencyWithinLimit: latencyOk,
   }
@@ -299,28 +331,54 @@ async function main(): Promise<void> {
   const { owner, name } = repoSlug(repo)
   const parsed = JSON.parse(readFileSync(casesPath, 'utf8')) as { cases: GenerationCase[] }
 
-  const db = openDatabase(join(repo, '.git', 'adpt-eval-generation.db'))
-  const projectId = randomUUID()
-  insertProject(db, {
-    id: projectId,
-    name: `eval:${owner}/${name}`,
-    localPath: repo,
-    repoNodeId: `EVAL_${randomUUID()}`,
-    repoOwner: owner,
-    repoName: name,
-    repoUrl: `https://github.com/${owner}/${name}`,
-    defaultBranch: 'main',
-    status: 'active',
-  })
+  let head: string
+  try {
+    head = git(repo, 'rev-parse', 'HEAD')
+  } catch {
+    throw new Error(`--repo has no commits: ${repo}`)
+  }
+
+  // 呼び出し元の branch / working tree / index に触れないよう worktree で隔離する。
+  const worktreeParent = mkdtempSync(join(tmpdir(), 'adpt-eval-wt-'))
+  const worktree = join(worktreeParent, 'wt')
+  const dbDir = mkdtempSync(join(tmpdir(), 'adpt-eval-db-'))
+  git(repo, 'worktree', 'add', '--detach', worktree, head)
 
   const results: CaseResult[] = []
-  for (const testCase of parsed.cases) {
-    results.push(await runCase(db, repo, projectId, testCase))
+  try {
+    const db = openDatabase(join(dbDir, 'eval.db'))
+    const projectId = randomUUID()
+    insertProject(db, {
+      id: projectId,
+      name: `eval:${owner}/${name}`,
+      localPath: worktree,
+      repoNodeId: `EVAL_${randomUUID()}`,
+      repoOwner: owner,
+      repoName: name,
+      repoUrl: `https://github.com/${owner}/${name}`,
+      defaultBranch: 'main',
+      status: 'active',
+    })
+    for (const testCase of parsed.cases) {
+      results.push(await runCase(db, worktree, projectId, testCase))
+    }
+    db.close()
+  } finally {
+    try {
+      git(repo, 'worktree', 'remove', '--force', worktree)
+    } catch {
+      // best effort
+    }
+    rmSync(worktreeParent, { recursive: true, force: true })
+    rmSync(dbDir, { recursive: true, force: true })
   }
-  db.close()
 
   const passed = results.filter((r) => r.pass).length
   const latencyWithinLimit = results.filter((r) => r.startLatencyWithinLimit).length
+  const fieldConfirmed: Record<string, number> = {}
+  for (const key of FIELD_KEYS) {
+    fieldConfirmed[key] = results.filter((r) => r.fields[key]?.solid).length
+  }
   const json = JSON.stringify(
     {
       tool: 'eval:generation',
@@ -329,6 +387,7 @@ async function main(): Promise<void> {
       passed,
       failed: results.length - passed,
       startLatencyWithinLimit: latencyWithinLimit,
+      fieldConfirmedCounts: fieldConfirmed,
       cases: results,
     },
     null,
