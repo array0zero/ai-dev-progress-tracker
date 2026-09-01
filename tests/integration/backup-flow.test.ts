@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -8,6 +8,7 @@ import type { Db } from '../../src/server/db/connection.js'
 import { getLease } from '../../src/server/db/lease-repository.js'
 import { insertRun, listRunsByProject } from '../../src/server/db/run-repository.js'
 import {
+  BACKUP_GITATTRIBUTES,
   BACKUP_SCOPE,
   type BackupGitDeps,
   enqueueBackup,
@@ -322,13 +323,14 @@ describe('backup flow', () => {
     const projectId = await register(ctx.db, { autoBackup: false })
     const headSha = repo.git('rev-parse', 'HEAD')
 
-    // clone を「既にある」状態にし、前回 export と同一の data を置く
+    // clone を「既にある」状態にし、前回 export と同一の data・`.gitattributes` を置く
     mkdirSync(join(cloneDir, '.git'), { recursive: true })
     mkdirSync(join(cloneDir, 'data'), { recursive: true })
     writeFileSync(
       join(cloneDir, 'manifest.json'),
       JSON.stringify({ appId: 'ai-dev-progress-tracker' }),
     )
+    writeFileSync(join(cloneDir, '.gitattributes'), BACKUP_GITATTRIBUTES)
     writeFileSync(join(cloneDir, 'data', 'backup-v1.json'), exportBackupData(ctx.db).dataJson)
 
     const enq = enqueueBackup(ctx.db, {
@@ -356,5 +358,44 @@ describe('backup flow', () => {
     expect(done?.backupCommitSha).toBe('HEAD_SHA_AAAA')
     expect(calls).not.toContain('commitPush')
     expect(calls).toContain('pull')
+  })
+
+  it('adds .gitattributes and re-pushes when an existing backup repo lacks it', async () => {
+    const projectId = await register(ctx.db, { autoBackup: false })
+    const headSha = repo.git('rev-parse', 'HEAD')
+
+    // 前回 export と byte-identical だが `.gitattributes` が無い (この修正より前の repo)
+    mkdirSync(join(cloneDir, '.git'), { recursive: true })
+    mkdirSync(join(cloneDir, 'data'), { recursive: true })
+    writeFileSync(
+      join(cloneDir, 'manifest.json'),
+      JSON.stringify({ appId: 'ai-dev-progress-tracker' }),
+    )
+    writeFileSync(join(cloneDir, 'data', 'backup-v1.json'), exportBackupData(ctx.db).dataJson)
+
+    const enq = enqueueBackup(ctx.db, {
+      trigger: 'pre_push',
+      projectId,
+      sourceCommitSha: headSha,
+      backupRepo: 'fake-user/ai-dev-progress-tracker-backup',
+    })
+    const run = getBackupRunById(ctx.db, enq.runId)
+    if (run === null) {
+      throw new Error('run missing')
+    }
+    const { deps, calls } = fakeGitDeps()
+
+    await runBackup(ctx.db, run, {
+      cloneDir,
+      settleTimeoutMs: 300,
+      settlePollMs: 20,
+      ensureRepo: OK_ENSURE,
+      git: deps,
+    })
+
+    expect(getBackupRunById(ctx.db, run.id)?.status).toBe('succeeded')
+    expect(calls).toContain('commitPush') // `.gitattributes` 追加のため commit する
+    expect(existsSync(join(cloneDir, '.gitattributes'))).toBe(true)
+    expect(readFileSync(join(cloneDir, '.gitattributes'), 'utf8')).toBe(BACKUP_GITATTRIBUTES)
   })
 })

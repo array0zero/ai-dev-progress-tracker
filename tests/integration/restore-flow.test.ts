@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import {
   existsSync,
@@ -12,10 +13,16 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { AppConfig } from '../../src/server/config.js'
+import { getBackupRunById } from '../../src/server/db/backup-repository.js'
 import { openDatabase } from '../../src/server/db/connection.js'
 import { insertProject, listProjects } from '../../src/server/db/project-repository.js'
 import { insertRun, upsertCommit } from '../../src/server/db/run-repository.js'
-import { createBackupExport } from '../../src/server/services/backup-service.js'
+import {
+  BACKUP_GITATTRIBUTES,
+  createBackupExport,
+  enqueueBackup,
+  runBackup,
+} from '../../src/server/services/backup-service.js'
 import { areHooksInstalled } from '../../src/server/services/hook-service.js'
 import { performRestore, restoreFromBackup } from '../../src/server/services/restore-service.js'
 import { createTempRepo, type TempRepo } from '../helpers/temp-repo.js'
@@ -328,6 +335,82 @@ describe('performRestore (CLI orchestration)', () => {
     } finally {
       restored.close()
     }
+  })
+})
+
+describe('restore checksum across a real git round-trip', () => {
+  let ctx: TestDb
+  let workDir: string
+
+  beforeEach(() => {
+    ctx = createTestDb()
+    workDir = mkdtempSync(join(tmpdir(), 'adpt-rt-'))
+  })
+
+  afterEach(() => {
+    ctx.cleanup()
+    rmSync(workDir, { recursive: true, force: true })
+  })
+
+  it('matches the manifest checksum after a clone with core.autocrlf=true', async () => {
+    const projectId = randomUUID()
+    insertProject(ctx.db, {
+      id: projectId,
+      name: 'roundtrip',
+      localPath: `/seed/${projectId}`,
+      repoNodeId: `NODE_${projectId}`,
+      repoOwner: 'seed',
+      repoName: 'demo',
+      repoUrl: 'https://github.com/seed/demo',
+      defaultBranch: 'main',
+      status: 'active',
+    })
+    const sha = 'a'.repeat(40)
+    upsertCommit(ctx.db, {
+      projectId,
+      sha,
+      parentSha: null,
+      message: 'seed',
+      authoredAt: '2026-09-01T00:00:00.000Z',
+      detectedAt: '2026-09-01T00:00:01.000Z',
+    })
+
+    // 実 backup repo の代わりに bare repo を用意し、実 git で push する。
+    const originDir = join(workDir, 'origin.git')
+    execFileSync('git', ['init', '-b', 'main', '--bare', originDir])
+
+    const enq = enqueueBackup(ctx.db, {
+      trigger: 'pre_push',
+      projectId,
+      sourceCommitSha: sha,
+      backupRepo: 'seed/backup',
+    })
+    const run = getBackupRunById(ctx.db, enq.runId)
+    if (run === null) {
+      throw new Error('run missing')
+    }
+    await runBackup(ctx.db, run, {
+      cloneDir: join(workDir, 'backup-repo'),
+      settleTimeoutMs: 2_000,
+      settlePollMs: 20,
+      ensureRepo: async () => ({ ok: true as const, slug: 'seed/backup', created: false }),
+      repoUrlFor: () => originDir,
+    })
+    expect(getBackupRunById(ctx.db, run.id)?.status).toBe('succeeded')
+
+    // Windows 相当の consumer: core.autocrlf=true で clone し直す。
+    const consumerDir = join(workDir, 'consumer')
+    execFileSync('git', ['-c', 'core.autocrlf=true', 'clone', originDir, consumerDir])
+
+    const dataJson = readFileSync(join(consumerDir, 'data', 'backup-v1.json'), 'utf8')
+    const manifestJson = readFileSync(join(consumerDir, 'manifest.json'), 'utf8')
+
+    // `.gitattributes` があり、backup-v1.json は CRLF に化けていない
+    expect(readFileSync(join(consumerDir, '.gitattributes'), 'utf8')).toBe(BACKUP_GITATTRIBUTES)
+    expect(dataJson).not.toContain('\r\n')
+
+    const result = restoreFromBackup(dataJson, manifestJson, join(workDir, 'rt.db'))
+    expect(result).toMatchObject({ ok: true })
   })
 })
 

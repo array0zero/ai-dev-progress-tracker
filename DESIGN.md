@@ -1,9 +1,16 @@
 # DESIGN.md — 設計書
 
 project_id: ai-dev-progress-tracker  
-version: 1.4  
+version: 1.5  
 date: 2026-09-01  
-source: PLAN.md v1.2 + 実機検証結果（2026-09-01）+ Windows実機不具合修正（2026-09-01）+ 空backup repo初回同期修正（2026-09-01）
+source: PLAN.md v1.2 + 実機検証結果（2026-09-01）+ Windows実機不具合修正（2026-09-01）+ 空backup repo初回同期修正（2026-09-01）+ backup改行変換によるchecksum不一致修正（2026-09-01）
+
+## v1.5変更点
+
+- Windowsのgitが`core.autocrlf`でbackupファイルの改行をcheckout時にLF→CRLF変換するため、生成時の`sha256`とclone後のbyte列が一致せず、`restore`が`BACKUP_CHECKSUM_MISMATCH`で失敗する不具合を修正。
+- backup repo rootへ`.gitattributes`（`* -text\n`）を追加し、`manifest.json` / `data/backup-v1.json`を改行変換対象から外す。既存repoは次回backupで`.gitattributes`を追加commit/pushして置き換える。
+- backup / restoreの既存clone再利用時に`git pull --ff-only`後`git checkout HEAD -- .`で追跡ファイルを現在の属性で再展開する。backup commitは`-c commit.gpgsign=false`で行う。
+- 設計判断ログにD023を追加。
 
 ## v1.4変更点
 
@@ -1183,12 +1190,14 @@ JSON Schemaに完全一致する出力だけを返してください。
 
 ```text
 backup-repo/
+├── .gitattributes   # 内容は `* -text\n`。改行変換を無効化する
 ├── manifest.json
 └── data/
     └── backup-v1.json
 ```
 
 `backup-v1.json`はUTF-8、2-space indent、末尾LF。配列はID昇順でsortする。
+改行はLF固定で、`.gitattributes`により`core.autocrlf`等の変換対象から外す。
 
 含めるテーブル:
 
@@ -1250,9 +1259,11 @@ SQLiteの`worker_leases`を使う。file lockは使わない。
 `<TRACKER_DATA_DIR>/backup-repo`を作業cloneとして使う。
 
 1. cloneが無ければ`git clone <repo url> backup-repo`。`gh repo create`直後のbackup repoはcommitが1つも無い（`gh api repos/<owner>/<name>/branches`が`[]`）。この空repoをcloneすると作業treeのHEADはunborn状態になる。
-2. cloneがあり、かつ`git rev-parse HEAD`でcommitが取得できる場合だけ`git pull --ff-only`する。commitが無い（初回・unborn HEAD）ときはfast-forward対象が無いため**pullをスキップ**する。commitがあるcloneでpullが失敗したら`failed / BACKUP_PULL_FAILED`。
-3. export結果に差分があるときのみcommit/pushする。commit前に`git symbolic-ref HEAD refs/heads/main`で現在branchをDESIGN固定の`main`へ寄せる（既に`main`ならno-op、index/working treeは変更しない）。
-4. pushは`git push -u origin main`（明示refspec + upstream設定）。初回はこのpushでbackup repoに`main` branchが作られる。1回失敗したら2秒後に1回再試行し、なお失敗なら`failed / BACKUP_PUSH_FAILED`。
+2. cloneがあり、かつ`git rev-parse HEAD`でcommitが取得できる場合だけ`git pull --ff-only`する。commitが無い（初回・unborn HEAD）ときはfast-forward対象が無いため**pullをスキップ**する。commitがあるcloneでpullが失敗したら`failed / BACKUP_PULL_FAILED`。pull成功後は`git checkout HEAD -- .`で追跡ファイルを現在の`.gitattributes`で再展開する（後述）。
+3. rootに`.gitattributes`（内容は`* -text\n`）を置き、`manifest.json`と`data/backup-v1.json`を改行変換なし（binary扱い）でcheckoutさせる。Windowsの`core.autocrlf`等でLF↔CRLF変換が起きると、生成時に計算した`sha256`とclone後のbyte列が不一致になりrestoreが`BACKUP_CHECKSUM_MISMATCH`になるため。`.gitattributes`が無い既存backup repo（本規定より前に作られたもの）は、次回backupでexport差分の有無にかかわらず`.gitattributes`を追加commit/pushして正しい状態へ置き換える。
+4. export結果に差分がある、または`.gitattributes`が未設置のときのみcommit/pushする。commit前に`git symbolic-ref HEAD refs/heads/main`で現在branchをDESIGN固定の`main`へ寄せる（既に`main`ならno-op、index/working treeは変更しない）。commitは`-c commit.gpgsign=false`で行う。
+5. pushは`git push -u origin main`（明示refspec + upstream設定）。初回はこのpushでbackup repoに`main` branchが作られる。1回失敗したら2秒後に1回再試行し、なお失敗なら`failed / BACKUP_PUSH_FAILED`。
+6. restore時のcloneも同じ`.gitattributes`が適用される。既存cloneを再利用する場合は`git pull --ff-only`後に`git checkout HEAD -- .`で再展開し、`manifest.json` / `data/backup-v1.json`を作業treeから読み直して`sha256`検証する。
 
 ### backupとgenerationの同期
 
@@ -1477,6 +1488,7 @@ DB:
 | D020 | better-sqlite3の型定義 | 型定義専用パッケージ`@types/better-sqlite3@9.6.0`を`devDependencies`へ追加 | `better-sqlite3`は型を同梱せず、`strict`前提のtypecheckに型が必須。ランタイム挙動は不変 | 手書きambient宣言（却下: 保守コスト増・不正確）／`any`許容（却下: 規約でany禁止） |
 | D021 | Windowsでの外部CLI起動と検査失敗の切り分け | process runnerが`PATH`+`PATHEXT`で実体を解決し、`.cmd`/`.bat` shimは`%ComSpec% /d /s /c`経由で（shellなしで）起動する。Codex検査は「実行不能」を`CODEX_VERSION_CHECK_FAILED`/`CODEX_AUTH_CHECK_FAILED`、「下限未満」を`CODEX_VERSION_UNSUPPORTED`として別コードで返す | Windowsではnpm製CLI（`codex`）が`.cmd` shimで、`spawn(shell:false)`が直接起動できずCVE-2024-27980で拒否される。実行不能と下限未満を同一コードにすると実機での原因切り分けができない | `shell:true`（却下: DESIGNの`shell:false`固定に反する）／実行時にnpm globalの`codex.js`実体を推測（却下: npm版差で壊れやすい）／`cross-spawn`依存追加（却下: 追加npm package最小化方針。相当ロジックを内製） |
 | D022 | 空backup repoの初回同期 | commitのあるcloneのみ`git pull --ff-only`し、unborn HEAD（`gh repo create`直後の空repoをcloneした状態）ではpullをスキップして初回pushへ進む。pushは`git push -u origin main`、その前に`git symbolic-ref HEAD refs/heads/main`で固定branchへ寄せる | 空repoにはbranch参照が無く`pull --ff-only`が必ず失敗して初回backupが成立しない。空repo判定を`git rev-parse HEAD`の可否で行えば追加のGitHub API呼び出しも不要 | `gh repo create`時に初期commitを作る（却下: ensure処理にclone/commit/pushが増え、visibility検証やmarker検証と手順が交錯する）／`--ff-only`を外して常にpull（却下: 誤ったfast-forwardでないmergeを許容しかねない） |
+| D023 | backupファイルの改行変換防止 | backup repo rootに`.gitattributes`（`* -text\n`）を置き、`manifest.json` / `data/backup-v1.json`をbinary扱い（改行変換なし）でcheckoutさせる。既存repoは次回backupで`.gitattributes`を追加commitして置き換え、clone再利用時は`git pull`後`git checkout HEAD -- .`で再展開する | Windowsの`core.autocrlf`がcheckout時にLF→CRLF変換し、生成時`sha256`（LF基準）とclone後byte列が不一致になり`restore`が`BACKUP_CHECKSUM_MISMATCH`で失敗する。ファイル単位の属性指定が最小の是正で、diff表示も不要なbackup用途に適合する | restore側で改行を正規化してからhash（却下: 正当なCRLFを含む値を静かに書き換え、checksumの意味が失われる）／`sha256`計算前にファイルを`\r\n`→`\n`変換（却下: 同上、かつ生成側と検証側でロジックが分岐する）／backupを常にbase64等でencode保存（却下: 人間可読なdeterministic JSONというD012の前提を崩す） |
 
 ---
 

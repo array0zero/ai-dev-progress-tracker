@@ -191,7 +191,14 @@ async function defaultSyncClone(repoUrl: string, cloneDir: string): Promise<bool
     const pull = await runProcess('git', ['-C', cloneDir, 'pull', '--ff-only'], {
       timeoutMs: 60_000,
     })
-    return !pull.timedOut && pull.code === 0
+    if (pull.timedOut || pull.code !== 0) {
+      return false
+    }
+    // `.gitattributes` (改行変換の無効化) が後から入った場合に備え、追跡ファイルを
+    // 現在の属性で再展開する。これで backup-v1.json が CRLF に化けた古い clone でも
+    // checksum が一致する。best-effort。
+    await runProcess('git', ['-C', cloneDir, 'checkout', 'HEAD', '--', '.'], { timeoutMs: 60_000 })
+    return true
   }
   const clone = await runProcess('git', ['clone', repoUrl, cloneDir], { timeoutMs: 120_000 })
   return !clone.timedOut && clone.code === 0

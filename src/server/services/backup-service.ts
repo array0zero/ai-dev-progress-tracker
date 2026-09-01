@@ -34,6 +34,12 @@ export const BACKUP_SCOPE = 'backup'
 export const SETTLE_TIMEOUT_MS = 180_000
 /** DESIGN.md「バックアップ先」: default branch は `main` 固定。初回 push でこの branch を作る。 */
 export const BACKUP_BRANCH = 'main'
+/**
+ * backup repo の `.gitattributes`。manifest.json / data/backup-v1.json を
+ * 改行変換なし (Windows の core.autocrlf 等の影響を受けない) で checkout させ、
+ * 生成時に計算した sha256 と clone 後の byte 列を一致させる。末尾は LF 固定。
+ */
+export const BACKUP_GITATTRIBUTES = '* -text\n'
 
 function sha256Hex(text: string): string {
   return createHash('sha256').update(text, 'utf8').digest('hex')
@@ -266,7 +272,15 @@ export interface BackupGitDeps {
 
 const DEFAULT_GIT_DEPS: BackupGitDeps = {
   clone: async (repoUrl, dest) => (await git(['clone', repoUrl, dest])).ok,
-  pullFfOnly: async (dir) => (await git(['-C', dir, 'pull', '--ff-only'])).ok,
+  pullFfOnly: async (dir) => {
+    if (!(await git(['-C', dir, 'pull', '--ff-only'])).ok) {
+      return false
+    }
+    // `.gitattributes` (改行変換の無効化) が後から入った clone に備え、
+    // 追跡ファイルを現在の属性で再展開する。best-effort。
+    await git(['-C', dir, 'checkout', 'HEAD', '--', '.'])
+    return true
+  },
   head: async (dir) => {
     const r = await git(['-C', dir, 'rev-parse', 'HEAD'], dir)
     return r.ok ? r.stdout : null
@@ -288,6 +302,8 @@ const DEFAULT_GIT_DEPS: BackupGitDeps = {
           'user.email=backup@local',
           '-c',
           'user.name=adpt',
+          '-c',
+          'commit.gpgsign=false',
           'commit',
           '-m',
           message,
@@ -412,14 +428,24 @@ export async function runBackup(
     return
   }
 
+  // backup 対象ファイルは改行変換なしで clone させ、生成時 sha256 と byte 一致させる。
+  // `.gitattributes` が未設置 (この修正より前に作られた repo) なら次回 backup で追加し、
+  // 壊れた checkout 前提の backup を正しい状態へ置き換える。
+  const attrPath = join(cloneDir, '.gitattributes')
+  const attrInPlace =
+    existsSync(attrPath) && readFileSync(attrPath, 'utf8') === BACKUP_GITATTRIBUTES
+
   const dataPath = join(cloneDir, 'data', 'backup-v1.json')
   const previousData = existsSync(dataPath) ? readFileSync(dataPath, 'utf8') : null
-  if (previousData === exported.dataJson) {
+  if (attrInPlace && previousData === exported.dataJson) {
     const head = await gitDeps.head(cloneDir)
     markBackupRunTerminal(db, run.id, 'succeeded', { backupCommitSha: head }, now())
     return
   }
 
+  if (!attrInPlace) {
+    writeFileSync(attrPath, BACKUP_GITATTRIBUTES, 'utf8')
+  }
   mkdirSync(dirname(dataPath), { recursive: true })
   writeFileSync(manifestPath, exported.manifestJson, 'utf8')
   writeFileSync(dataPath, exported.dataJson, 'utf8')
