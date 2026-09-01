@@ -26,7 +26,7 @@ jobs:
 
       - name: Verify Node version range
         run: |
-          node -e "const v=process.versions.node.split('.').map(Number); if(!(v[0]===24 && (v[1]>15 || (v[1]===15 && v[2]>=0)))) process.exit(1)"
+          node -e "const [a,b,c]=process.versions.node.split('.').map(Number); const ok=(a>24||(a===24&&(b>15||(b===15&&c>=0))))&&a<25; process.exit(ok?0:1)"
 
       - name: Install dependencies
         run: npm ci
