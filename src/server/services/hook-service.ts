@@ -57,6 +57,22 @@ async function classifyHook(hookPath: string, projectId: string): Promise<HookSt
   return 'append'
 }
 
+/** post-commit / pre-push に当該 project の管理ブロックが両方あるか。 */
+export async function areHooksInstalled(gitDir: string, projectId: string): Promise<boolean> {
+  const marker = beginMarker(projectId)
+  for (const name of HOOK_NAMES) {
+    try {
+      const content = await readFile(join(gitDir, 'hooks', name), 'utf8')
+      if (!content.includes(marker)) {
+        return false
+      }
+    } catch {
+      return false
+    }
+  }
+  return true
+}
+
 /** 書き込みを行わずに2種hookが設置可能か (既存の非shebang hookがないか) だけを判定する。 */
 export async function assertHooksInstallable(
   gitDir: string,

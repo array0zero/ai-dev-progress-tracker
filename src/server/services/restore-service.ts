@@ -1,7 +1,12 @@
 import { createHash } from 'node:crypto'
-import { existsSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { inspectRepository } from '../adapters/git.js'
+import { runProcess } from '../adapters/process-runner.js'
+import type { AppConfig } from '../config.js'
 import { openDatabase } from '../db/connection.js'
 import { LATEST_MIGRATION_VERSION } from '../db/migrations.js'
+import { listProjects, updateProjectStatus } from '../db/project-repository.js'
 import {
   BACKUP_TABLES,
   type BackupData,
@@ -9,6 +14,8 @@ import {
   backupDataSchema,
   backupManifestSchema,
 } from '../schemas/backup.js'
+import { type EnsureBackupRepoResult, ensureBackupRepo } from './backup-service.js'
+import { installHooks } from './hook-service.js'
 
 export type RestoreResult =
   | { ok: true; tempDbPath: string; manifest: BackupManifest }
@@ -149,4 +156,166 @@ function failAndCleanup(
   }
   removeTempDb(tempDbPath)
   return fail(code, reason)
+}
+
+// --- full restore orchestration (T016) --------------------------------------
+
+function timestampSuffix(now: Date): string {
+  return now.toISOString().replace(/[:.]/g, '-')
+}
+
+export interface PerformRestoreOptions {
+  force?: boolean
+  now?: () => Date
+  ensureRepo?: () => Promise<EnsureBackupRepoResult>
+  repoUrlFor?: (slug: string) => string
+  /** cloneDir へ manifest.json + data/backup-v1.json を用意する (既定は git clone / pull --ff-only)。 */
+  syncClone?: (repoUrl: string, cloneDir: string) => Promise<boolean>
+  installHooks?: typeof installHooks
+  inspectRepository?: typeof inspectRepository
+}
+
+export interface PerformRestoreResult {
+  ok: boolean
+  exitCode: number
+  code?: string
+  reason?: string
+  restoredProjects?: number
+  reinstalledHooks?: string[]
+  localMissing?: string[]
+  preRestorePath?: string | null
+}
+
+async function defaultSyncClone(repoUrl: string, cloneDir: string): Promise<boolean> {
+  if (existsSync(join(cloneDir, '.git'))) {
+    const pull = await runProcess('git', ['-C', cloneDir, 'pull', '--ff-only'], {
+      timeoutMs: 60_000,
+    })
+    return !pull.timedOut && pull.code === 0
+  }
+  const clone = await runProcess('git', ['clone', repoUrl, cloneDir], { timeoutMs: 120_000 })
+  return !clone.timedOut && clone.code === 0
+}
+
+/**
+ * DESIGN.md「Restore CLI」: backup repo を同期 → 検証済み temp DB を作成 →
+ * (既存DBは --force 時のみ退避して) atomic rename で tracker.db を置換 →
+ * local_path が存在し repo identity 一致の project へ hook 再設置、それ以外は local_missing。
+ * 既存DBありで --force なしは exitCode 2。
+ */
+export async function performRestore(
+  config: AppConfig,
+  options: PerformRestoreOptions = {},
+): Promise<PerformRestoreResult> {
+  const now = options.now ?? (() => new Date())
+  const ensure = options.ensureRepo ?? (() => ensureBackupRepo())
+  const repoUrlFor = options.repoUrlFor ?? ((slug: string) => `https://github.com/${slug}.git`)
+  const syncClone = options.syncClone ?? defaultSyncClone
+  const hooks = options.installHooks ?? installHooks
+  const inspect = options.inspectRepository ?? inspectRepository
+
+  const cloneDir = join(config.dataDir, 'backup-repo')
+  const repo = await ensure()
+  if (!repo.ok) {
+    return {
+      ok: false,
+      exitCode: 1,
+      code: repo.code,
+      reason: 'Backup repository is not available.',
+    }
+  }
+
+  mkdirSync(dirname(cloneDir), { recursive: true })
+  if (!(await syncClone(repoUrlFor(repo.slug), cloneDir))) {
+    return {
+      ok: false,
+      exitCode: 1,
+      code: 'BACKUP_CLONE_FAILED',
+      reason: 'Could not sync the backup clone.',
+    }
+  }
+
+  const manifestPath = join(cloneDir, 'manifest.json')
+  const dataPath = join(cloneDir, 'data', 'backup-v1.json')
+  if (!existsSync(manifestPath) || !existsSync(dataPath)) {
+    return {
+      ok: false,
+      exitCode: 1,
+      code: 'BACKUP_FILES_MISSING',
+      reason: 'manifest.json / data missing.',
+    }
+  }
+
+  const dbExists = existsSync(config.dbPath)
+  if (dbExists && options.force !== true) {
+    return {
+      ok: false,
+      exitCode: 2,
+      code: 'DB_EXISTS',
+      reason: 'An existing tracker.db was found. Re-run with --force to overwrite.',
+    }
+  }
+
+  const suffix = timestampSuffix(now())
+  const tempPath = `${config.dbPath}.restore-${suffix}`
+  const restored = restoreFromBackup(
+    readFileSync(dataPath, 'utf8'),
+    readFileSync(manifestPath, 'utf8'),
+    tempPath,
+  )
+  if (!restored.ok) {
+    return { ok: false, exitCode: 1, code: restored.code, reason: restored.reason }
+  }
+
+  let preRestorePath: string | null = null
+  if (dbExists) {
+    preRestorePath = `${config.dbPath}.pre-restore-${suffix}`
+    renameSync(config.dbPath, preRestorePath)
+    for (const sidecar of ['-wal', '-shm']) {
+      try {
+        rmSync(`${config.dbPath}${sidecar}`, { force: true })
+      } catch {
+        // ignore
+      }
+    }
+  }
+  renameSync(tempPath, config.dbPath)
+
+  const db = openDatabase(config.dbPath)
+  const reinstalledHooks: string[] = []
+  const localMissing: string[] = []
+  try {
+    const projects = listProjects(db)
+    for (const project of projects) {
+      if (!existsSync(project.localPath)) {
+        updateProjectStatus(db, project.id, 'local_missing', now())
+        localMissing.push(project.id)
+        continue
+      }
+      const inspection = await inspect(
+        project.localPath,
+        `${project.repoOwner}/${project.repoName}`,
+      )
+      if (inspection.ok) {
+        await hooks(inspection.layout.gitDir, project.id)
+        if (project.status !== 'active') {
+          updateProjectStatus(db, project.id, 'active', now())
+        }
+        reinstalledHooks.push(project.id)
+      } else {
+        updateProjectStatus(db, project.id, 'local_missing', now())
+        localMissing.push(project.id)
+      }
+    }
+    return {
+      ok: true,
+      exitCode: 0,
+      restoredProjects: projects.length,
+      reinstalledHooks,
+      localMissing,
+      preRestorePath,
+    }
+  } finally {
+    db.close()
+  }
 }

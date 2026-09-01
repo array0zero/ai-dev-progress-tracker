@@ -2,6 +2,7 @@ import { parseArgs } from 'node:util'
 import { runDoctor } from './commands/doctor.js'
 import { runHookBackup } from './commands/hook-backup.js'
 import { type HookCommitArgs, runHookCommit } from './commands/hook-commit.js'
+import { runRestore } from './commands/restore.js'
 
 function parseHookArgs(argv: readonly string[]): HookCommitArgs | null {
   const { values } = parseArgs({
@@ -42,6 +43,14 @@ async function dispatch(argv: readonly string[]): Promise<number> {
         return 2
       }
       return runHookBackup(parsed)
+    }
+    case 'restore': {
+      const { values } = parseArgs({
+        args: [...rest],
+        options: { force: { type: 'boolean' } },
+        strict: false,
+      })
+      return runRestore({ force: values.force === true })
     }
     default:
       process.stderr.write(`Unknown command: ${command ?? '(none)'}\n`)
