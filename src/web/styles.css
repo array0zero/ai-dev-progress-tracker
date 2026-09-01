@@ -20,12 +20,129 @@ body {
 }
 
 .app-header h1 {
-  margin: 0 0 8px;
+  margin: 0 0 16px;
   font-size: 1.5rem;
 }
 
-.app-lead {
+.status-banner {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  border: 1px solid #d98b8b;
+  border-radius: 8px;
+  background: #fdecec;
+  color: #7a1f1f;
+}
+
+.status-banner__code {
+  font-weight: 700;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.register-form {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  margin-bottom: 24px;
+  border: 1px solid #d7dae0;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.register-form label {
+  display: grid;
+  gap: 4px;
+  font-size: 0.85rem;
+  color: #4a5058;
+}
+
+.register-form input {
+  padding: 8px 10px;
+  border: 1px solid #c3c8d0;
+  border-radius: 6px;
+  font-size: 0.95rem;
+}
+
+.register-form button {
+  justify-self: start;
+  padding: 8px 20px;
+  border: 0;
+  border-radius: 6px;
+  background: #2f6feb;
+  color: #fff;
+  font-size: 0.95rem;
+  cursor: pointer;
+}
+
+.register-form button:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+.project-list {
+  display: grid;
+  gap: 16px;
+}
+
+.project-list__empty {
+  color: #6b7280;
+}
+
+.project-card {
+  padding: 16px;
+  border: 1px solid #d7dae0;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.project-card__name {
+  margin: 0 0 4px;
+  font-size: 1.1rem;
+}
+
+.project-card__repo {
   margin: 0;
   color: #4a5058;
-  line-height: 1.6;
+}
+
+.project-card__sha {
+  margin: 0 0 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #6b7280;
+}
+
+.project-card__progress {
+  display: grid;
+  grid-template-columns: 6rem 1fr;
+  gap: 4px 12px;
+  margin: 0 0 12px;
+}
+
+.project-card__progress dt {
+  font-weight: 600;
+  color: #4a5058;
+}
+
+.project-card__progress dd {
+  margin: 0;
+}
+
+.project-card__progress ul {
+  margin: 0;
+  padding-left: 1.2rem;
+}
+
+.project-card__generation,
+.project-card__backup {
+  margin: 2px 0;
+  font-size: 0.85rem;
+  color: #6b7280;
+}
+
+.project-card__link {
+  display: inline-block;
+  margin-top: 8px;
+  color: #2f6feb;
 }

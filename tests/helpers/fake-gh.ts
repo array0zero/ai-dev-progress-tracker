@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -75,8 +75,15 @@ process.stderr.write('fake-gh: unhandled command: ' + argv.join(' ') + '\\n')
 process.exit(2)
 `
 
-export function createFakeGh(fixtures: FakeGhFixtures = {}): FakeGh {
-  const dir = mkdtempSync(join(tmpdir(), 'fake-gh-'))
+export interface WrittenFakeGh {
+  env: Record<string, string>
+  fixturesPath: string
+  callsPath: string
+}
+
+/** 指定ディレクトリへ fake gh 一式を書き出し、adapter 用の env を返す。 */
+export function writeFakeGh(dir: string, fixtures: FakeGhFixtures = {}): WrittenFakeGh {
+  mkdirSync(dir, { recursive: true })
   const scriptPath = join(dir, 'fake-gh.mjs')
   const fixturesPath = join(dir, 'fixtures.json')
   const callsPath = join(dir, 'calls.jsonl')
@@ -92,8 +99,29 @@ export function createFakeGh(fixtures: FakeGhFixtures = {}): FakeGh {
       FAKE_GH_FIXTURES: fixturesPath,
       FAKE_GH_CALLS: callsPath,
     },
+    fixturesPath,
+    callsPath,
+  }
+}
+
+/** fixtures ファイルへ 1 リポジトリ分の repoView を追記する (E2E から実行時に追加する用)。 */
+export function addRepoFixture(
+  fixturesPath: string,
+  slug: string,
+  repoView: Record<string, unknown>,
+): void {
+  const current = JSON.parse(readFileSync(fixturesPath, 'utf8')) as FakeGhFixtures
+  current.repos = { ...current.repos, [slug]: { repoView } }
+  writeFileSync(fixturesPath, JSON.stringify(current))
+}
+
+export function createFakeGh(fixtures: FakeGhFixtures = {}): FakeGh {
+  const dir = mkdtempSync(join(tmpdir(), 'fake-gh-'))
+  const written = writeFakeGh(dir, fixtures)
+  return {
+    env: written.env,
     calls: () =>
-      readFileSync(callsPath, 'utf8')
+      readFileSync(written.callsPath, 'utf8')
         .split('\n')
         .filter((line) => line !== '')
         .map((line) => JSON.parse(line) as string[]),
