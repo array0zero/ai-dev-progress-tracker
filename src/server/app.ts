@@ -14,8 +14,40 @@ export interface BuildAppOptions {
   db: Db
 }
 
+const LOCAL_HOSTNAMES = new Set(['127.0.0.1', 'localhost', '::1'])
+const MUTATION_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
+
+function hostnameOf(hostHeader: string): string {
+  const match = hostHeader.match(/^\[?([^\]]+?)\]?(?::\d+)?$/)
+  return (match?.[1] ?? hostHeader).toLowerCase()
+}
+
 export async function buildApp({ config, db }: BuildAppOptions): Promise<FastifyInstance> {
   const app = Fastify({ logger: false })
+
+  const allowedOrigins = new Set([
+    `http://127.0.0.1:${config.port}`,
+    `http://localhost:${config.port}`,
+  ])
+
+  // localhost 境界: 非 localhost Host を拒否。CORS header は付与しない。
+  // Host のポートは強制しない (DNS rebinding 対策の本質は hostname、かつ app.inject 互換)。
+  app.addHook('onRequest', async (request, reply) => {
+    const host = request.headers.host
+    if (host === undefined || !LOCAL_HOSTNAMES.has(hostnameOf(host))) {
+      return reply
+        .code(403)
+        .send({ error: { code: 'FORBIDDEN_HOST', message: 'Host is not allowed.' } })
+    }
+    if (MUTATION_METHODS.has(request.method)) {
+      const origin = request.headers.origin
+      if (origin !== undefined && !allowedOrigins.has(origin.toLowerCase())) {
+        return reply
+          .code(403)
+          .send({ error: { code: 'FORBIDDEN_ORIGIN', message: 'Origin is not allowed.' } })
+      }
+    }
+  })
 
   await app.register(healthRoutes, { prefix: '/api' })
   await app.register(projectRoutes(db), { prefix: '/api' })

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { ProjectSummary } from '../../shared/api.js'
+import type { ProjectSummary, SystemStatus } from '../../shared/api.js'
 import { ApiError, fetchProjects } from '../api/client.js'
 import { ProjectCard } from '../components/ProjectCard.js'
 import { RegisterProjectForm } from '../components/RegisterProjectForm.js'
@@ -10,9 +10,22 @@ interface BannerState {
   message: string
 }
 
+async function fetchSystemStatus(): Promise<SystemStatus | null> {
+  try {
+    const response = await fetch('/api/system/status')
+    if (!response.ok) {
+      return null
+    }
+    return (await response.json()) as SystemStatus
+  } catch {
+    return null
+  }
+}
+
 export function DashboardPage() {
   const [projects, setProjects] = useState<ProjectSummary[]>([])
   const [banner, setBanner] = useState<BannerState | null>(null)
+  const [system, setSystem] = useState<SystemStatus | null>(null)
   const [loading, setLoading] = useState(true)
 
   const reload = useCallback(async () => {
@@ -28,6 +41,7 @@ export function DashboardPage() {
     } finally {
       setLoading(false)
     }
+    setSystem(await fetchSystemStatus())
   }, [])
 
   useEffect(() => {
@@ -39,6 +53,23 @@ export function DashboardPage() {
       <header className="app-header">
         <h1>AI Dev Progress Tracker</h1>
       </header>
+
+      {system?.latestGenerationFailure != null ? (
+        <StatusBanner
+          variant="warning"
+          label="最新の生成失敗"
+          code={system.latestGenerationFailure.errorCode ?? system.latestGenerationFailure.status}
+          message={`${system.latestGenerationFailure.projectName} (${system.latestGenerationFailure.runId})`}
+        />
+      ) : null}
+      {system?.latestBackupFailure != null ? (
+        <StatusBanner
+          variant="warning"
+          label="最新のバックアップ失敗"
+          code={system.latestBackupFailure.errorCode ?? 'BACKUP_FAILED'}
+          message={system.latestBackupFailure.backupRunId}
+        />
+      ) : null}
 
       {banner !== null ? <StatusBanner code={banner.code} message={banner.message} /> : null}
 

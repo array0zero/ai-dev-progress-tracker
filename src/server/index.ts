@@ -22,6 +22,7 @@ async function main(): Promise<void> {
 
   const db = openDatabase(config.dbPath)
   const app = await buildApp({ config, db })
+  // listen host は config で `127.0.0.1` 固定 (env で変更不可)。internet 公開しない。
   await app.listen({ host: config.host, port: config.port })
   logger.info('server listening', { host: config.host, port: config.port })
 }

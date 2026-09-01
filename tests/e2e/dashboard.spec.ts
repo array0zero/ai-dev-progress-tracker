@@ -173,3 +173,35 @@ test('reflects a completed snapshot, a partial one, and a failed generation on t
   await expect(failed).toContainText('generation: failed')
   await expect(failed).toContainText('進捗生成中')
 })
+
+test('rejects a non-localhost Host header with 403', async ({ request }) => {
+  const response = await request.get('/api/health', { headers: { host: 'evil.example.com' } })
+  expect(response.status()).toBe(403)
+  const ok = await request.get('/api/health')
+  expect(ok.status()).toBe(200)
+})
+
+test('rejects a mutation from an external Origin with 403', async ({ request }) => {
+  const blocked = await request.post('/api/backup', {
+    headers: { origin: 'http://evil.example.com' },
+    data: {},
+  })
+  expect(blocked.status()).toBe(403)
+
+  // Origin なしの POST は許可される
+  const allowed = await request.post('/api/backup', { data: {} })
+  expect([202, 409]).toContain(allowed.status())
+})
+
+test('surfaces the latest generation failure in a dashboard banner', async ({ page }) => {
+  seedProjectWithProgress({
+    name: 'Sys Failed',
+    recoveryStatus: 'complete',
+    runStatus: 'failed',
+    withSnapshot: false,
+  })
+
+  await page.goto('/')
+  const banner = page.locator('.status-banner--warning', { hasText: '最新の生成失敗' })
+  await expect(banner).toBeVisible()
+})
