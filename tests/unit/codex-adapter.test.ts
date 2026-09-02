@@ -29,8 +29,8 @@ describe('codex adapter', () => {
     }
   })
 
-  it('rejects Codex 0.145.9 before exec with CODEX_VERSION_UNSUPPORTED (version obtained, below minimum)', async () => {
-    fakeCodex({ version: 'codex-cli 0.145.9', authMode: 'chatgpt' })
+  it('rejects Codex 0.151.9 before exec with CODEX_VERSION_UNSUPPORTED (version obtained, below minimum)', async () => {
+    fakeCodex({ version: 'codex-cli 0.151.9', authMode: 'chatgpt' })
     const result = await checkCodexReady()
     expect(result).toEqual({ ok: false, code: 'CODEX_VERSION_UNSUPPORTED' })
   })
@@ -43,7 +43,7 @@ describe('codex adapter', () => {
   })
 
   it('reports CODEX_VERSION_CHECK_FAILED when `codex --version` exits non-zero', async () => {
-    fakeCodex({ version: 'codex-cli 0.146.0', versionExitCode: 3, authMode: 'chatgpt' })
+    fakeCodex({ version: 'codex-cli 0.152.0', versionExitCode: 3, authMode: 'chatgpt' })
     expect(await checkCodexReady()).toEqual({ ok: false, code: 'CODEX_VERSION_CHECK_FAILED' })
   })
 
@@ -52,8 +52,8 @@ describe('codex adapter', () => {
     expect(await checkCodexReady()).toEqual({ ok: false, code: 'VERSION_PARSE_ERROR' })
   })
 
-  it('passes the version check for 0.146.0 and 0.147.0 with ChatGPT auth', async () => {
-    for (const version of ['codex-cli 0.146.0', 'codex-cli 0.147.0']) {
+  it('passes the version check for 0.152.0 and 0.153.0 with ChatGPT auth', async () => {
+    for (const version of ['codex-cli 0.152.0', 'codex-cli 0.153.0']) {
       vi.unstubAllEnvs()
       fakeCodex({ version, authMode: 'chatgpt' })
       const result = await checkCodexReady()
@@ -62,12 +62,12 @@ describe('codex adapter', () => {
   })
 
   it('rejects API key auth with AI_AUTH_NOT_CHATGPT', async () => {
-    fakeCodex({ version: 'codex-cli 0.146.0', authMode: 'apikey' })
+    fakeCodex({ version: 'codex-cli 0.152.0', authMode: 'apikey' })
     expect(await checkCodexReady()).toEqual({ ok: false, code: 'AI_AUTH_NOT_CHATGPT' })
   })
 
   it('reports CODEX_AUTH_REQUIRED when not logged in', async () => {
-    fakeCodex({ version: 'codex-cli 0.146.0', authMode: 'none' })
+    fakeCodex({ version: 'codex-cli 0.152.0', authMode: 'none' })
     expect(await checkCodexReady()).toEqual({ ok: false, code: 'CODEX_AUTH_REQUIRED' })
   })
 

@@ -57,18 +57,18 @@ export type VersionTuple = readonly [number, number, number]
 
 export interface VersionRequirement {
   readonly min: VersionTuple
-  /** exclusive upper bound. Node.js のみ設定する。 */
-  readonly maxExclusive?: VersionTuple
   readonly unsupportedCode: string
 }
 
 export const VERSION_PARSE_ERROR = 'VERSION_PARSE_ERROR'
 
+// DESIGN v2.1: 下限のみを固定し、上限は設定しない。
 export const VERSION_REQUIREMENTS = {
-  node: { min: [24, 15, 0], maxExclusive: [25, 0, 0], unsupportedCode: 'NODE_VERSION_UNSUPPORTED' },
+  node: { min: [24, 15, 0], unsupportedCode: 'NODE_VERSION_UNSUPPORTED' },
   git: { min: [2, 45, 0], unsupportedCode: 'GIT_VERSION_UNSUPPORTED' },
   gh: { min: [2, 98, 0], unsupportedCode: 'GH_VERSION_UNSUPPORTED' },
-  codex: { min: [0, 146, 0], unsupportedCode: 'CODEX_VERSION_UNSUPPORTED' },
+  codex: { min: [0, 152, 0], unsupportedCode: 'CODEX_VERSION_UNSUPPORTED' },
+  claude: { min: [2, 1, 258], unsupportedCode: 'CLAUDE_VERSION_UNSUPPORTED' },
 } as const satisfies Record<string, VersionRequirement>
 
 export function extractVersion(raw: string): VersionTuple | null {
@@ -99,12 +99,6 @@ export function checkVersion(raw: string, requirement: VersionRequirement): Vers
     return { ok: false, code: VERSION_PARSE_ERROR }
   }
   if (compareVersionTuples(version, requirement.min) < 0) {
-    return { ok: false, code: requirement.unsupportedCode }
-  }
-  if (
-    requirement.maxExclusive !== undefined &&
-    compareVersionTuples(version, requirement.maxExclusive) >= 0
-  ) {
     return { ok: false, code: requirement.unsupportedCode }
   }
   return { ok: true, version }

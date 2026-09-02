@@ -29,6 +29,11 @@ export const API_ERROR_CODES = [
   'GIT_VERSION_UNSUPPORTED',
   'GH_VERSION_UNSUPPORTED',
   'CODEX_VERSION_UNSUPPORTED',
+  'CLAUDE_VERSION_UNSUPPORTED',
+  'CODEX_NOTIFY_CONFLICT',
+  'CLAUDE_HOOKS_DISABLED',
+  'AGENT_HOOK_PATH_STALE',
+  'INVALID_AGENT_CONFIG',
   'VERSION_PARSE_ERROR',
   'CODEX_AUTH_REQUIRED',
   'AI_AUTH_NOT_CHATGPT',
@@ -97,7 +102,14 @@ export interface BackupFailureSummary {
   queuedAt: string
 }
 
+/** raw auth 出力・token・user config 本文は含めない (DESIGN 7章)。 */
+export interface AgentIntegrationReadiness {
+  codexDetection: string
+  claudeDetection: string
+}
+
 export interface SystemStatus {
   latestGenerationFailure: GenerationFailureSummary | null
   latestBackupFailure: BackupFailureSummary | null
+  agentIntegration: AgentIntegrationReadiness
 }

@@ -1,5 +1,9 @@
 import { type RunResult, runProcess } from '../../server/adapters/process-runner.js'
 import { checkVersion, VERSION_REQUIREMENTS, type VersionRequirement } from '../../server/config.js'
+import {
+  type AgentIntegrationOptions,
+  inspectAgentIntegration,
+} from '../../server/services/agent-integration-service.js'
 
 const CLI_TIMEOUT_MS = 20_000
 const CHATGPT_MARKER = /Logged in using ChatGPT/i
@@ -9,6 +13,8 @@ interface CheckOutcome {
   name: string
   ok: boolean
   detail: string
+  /** setup 前の未導入など、行動可能だが失敗ではない状態。exit code へ影響させない。 */
+  warnOnly?: boolean
 }
 
 async function checkCliVersion(
@@ -75,8 +81,32 @@ async function checkCodexAuth(): Promise<CheckOutcome> {
   }
 }
 
+const READINESS_DETAIL: Record<string, string> = {
+  ready: 'ready',
+  stale: 'AGENT_HOOK_PATH_STALE',
+  conflict: 'CODEX_NOTIFY_CONFLICT',
+  hooks_disabled: 'CLAUDE_HOOKS_DISABLED',
+  invalid_config: 'INVALID_AGENT_CONFIG',
+  not_installed: 'not installed (run: setup-agents)',
+}
+
+/** user 設定の tracker entry 状態を固定 code へ落とす。config 本文は出力しない。 */
+function checkAgentIntegration(options: AgentIntegrationOptions): CheckOutcome[] {
+  const status = inspectAgentIntegration(options)
+  const toOutcome = (name: string, readiness: string): CheckOutcome => ({
+    name,
+    ok: readiness === 'ready',
+    detail: READINESS_DETAIL[readiness] ?? readiness,
+    warnOnly: readiness === 'not_installed',
+  })
+  return [
+    toOutcome('Codex detection', status.codexDetection),
+    toOutcome('Claude detection', status.claudeDetection),
+  ]
+}
+
 /** すべての検査がpassなら0、いずれか失敗で1を返す。 */
-export async function runDoctor(): Promise<number> {
+export async function runDoctor(options: AgentIntegrationOptions = {}): Promise<number> {
   const nodeCheck = checkVersion(process.versions.node, VERSION_REQUIREMENTS.node)
   const outcomes: CheckOutcome[] = [
     {
@@ -89,11 +119,14 @@ export async function runDoctor(): Promise<number> {
     await checkGhAuth(),
     await checkCliVersion('Codex CLI', 'codex', ['--version'], VERSION_REQUIREMENTS.codex),
     await checkCodexAuth(),
+    await checkCliVersion('Claude Code', 'claude', ['--version'], VERSION_REQUIREMENTS.claude),
+    ...checkAgentIntegration(options),
   ]
 
   for (const outcome of outcomes) {
-    process.stdout.write(`${outcome.ok ? 'OK  ' : 'FAIL'} ${outcome.name}: ${outcome.detail}\n`)
+    const label = outcome.ok ? 'OK  ' : outcome.warnOnly === true ? 'WARN' : 'FAIL'
+    process.stdout.write(`${label} ${outcome.name}: ${outcome.detail}\n`)
   }
 
-  return outcomes.every((outcome) => outcome.ok) ? 0 : 1
+  return outcomes.every((outcome) => outcome.ok || outcome.warnOnly === true) ? 0 : 1
 }

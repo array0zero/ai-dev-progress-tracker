@@ -47,7 +47,7 @@ export const CODEX_VERSION_CHECK_FAILED = 'CODEX_VERSION_CHECK_FAILED'
 export const CODEX_AUTH_CHECK_FAILED = 'CODEX_AUTH_CHECK_FAILED'
 
 /**
- * Codex 実行直前の検査。version 下限 (>=0.146.0) → ChatGPT 認証の順で確認する。
+ * Codex 実行直前の検査。version 下限 (>=0.152.0) → ChatGPT 認証の順で確認する。
  * raw 出力は保持・表示しない。
  * - 実行自体に失敗: CODEX_VERSION_CHECK_FAILED / CODEX_AUTH_CHECK_FAILED
  * - 実行できたが出力から version を抽出不能: VERSION_PARSE_ERROR

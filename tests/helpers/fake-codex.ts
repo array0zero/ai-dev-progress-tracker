@@ -35,7 +35,7 @@ const cfg = JSON.parse(readFileSync(process.env.FAKE_CODEX_CONFIG, 'utf8'))
 appendFileSync(process.env.FAKE_CODEX_CALLS, JSON.stringify(argv) + '\\n')
 
 if (argv.includes('--version')) {
-  process.stdout.write((cfg.version ?? 'codex-cli 0.146.0') + '\\n')
+  process.stdout.write((cfg.version ?? 'codex-cli 0.152.0') + '\\n')
   process.exit(cfg.versionExitCode ?? 0)
 }
 

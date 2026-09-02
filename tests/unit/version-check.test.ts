@@ -9,20 +9,23 @@ describe('checkVersion', () => {
   const passCases: Array<[keyof typeof VERSION_REQUIREMENTS, string]> = [
     ['node', 'v24.15.0'],
     ['node', 'v24.99.99'],
+    ['node', 'v25.0.0'],
     ['git', 'git version 2.45.0'],
     ['git', 'git version 3.0.0'],
     ['gh', 'gh version 2.98.0 (2026-01-01)'],
     ['gh', 'gh version 3.0.0 (2026-01-01)'],
-    ['codex', 'codex-cli 0.146.0'],
-    ['codex', 'codex-cli 0.147.0'],
+    ['codex', 'codex-cli 0.152.0'],
+    ['codex', 'codex-cli 1.0.0'],
+    ['claude', '2.1.258 (Claude Code)'],
+    ['claude', '3.0.0 (Claude Code)'],
   ]
 
   const failCases: Array<[keyof typeof VERSION_REQUIREMENTS, string, string]> = [
     ['node', 'v24.14.9', 'NODE_VERSION_UNSUPPORTED'],
-    ['node', 'v25.0.0', 'NODE_VERSION_UNSUPPORTED'],
     ['git', 'git version 2.44.9', 'GIT_VERSION_UNSUPPORTED'],
     ['gh', 'gh version 2.97.9 (2026-01-01)', 'GH_VERSION_UNSUPPORTED'],
-    ['codex', 'codex-cli 0.145.9', 'CODEX_VERSION_UNSUPPORTED'],
+    ['codex', 'codex-cli 0.151.9', 'CODEX_VERSION_UNSUPPORTED'],
+    ['claude', '2.1.257 (Claude Code)', 'CLAUDE_VERSION_UNSUPPORTED'],
   ]
 
   for (const [key, raw] of passCases) {
@@ -54,7 +57,7 @@ describe('checkVersion', () => {
 
   it('extracts the first triple and ignores prerelease/build metadata', () => {
     expect(extractVersion('v24.15.0-nightly.20260101+abcdef')).toEqual([24, 15, 0])
-    expect(extractVersion('codex 0.146.0-rc.1')).toEqual([0, 146, 0])
+    expect(extractVersion('codex 0.152.0-rc.1')).toEqual([0, 152, 0])
     expect(extractVersion('2.45')).toBeNull()
   })
 })

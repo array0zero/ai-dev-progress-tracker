@@ -4,6 +4,7 @@ import { getLatestBackupRun } from '../db/backup-repository.js'
 import type { Db } from '../db/connection.js'
 import { listProjects } from '../db/project-repository.js'
 import { getLatestGenerationRun } from '../db/run-repository.js'
+import { inspectAgentIntegration } from '../services/agent-integration-service.js'
 
 const GENERATION_FAILURE_STATUSES = new Set(['failed', 'unrecoverable'])
 
@@ -41,7 +42,11 @@ export function systemRoutes(db: Db): FastifyPluginAsync {
           ? { backupRunId: backup.id, errorCode: backup.errorCode, queuedAt: backup.queuedAt }
           : null
 
-      return { latestGenerationFailure, latestBackupFailure }
+      return {
+        latestGenerationFailure,
+        latestBackupFailure,
+        agentIntegration: inspectAgentIntegration(),
+      }
     })
   }
 }

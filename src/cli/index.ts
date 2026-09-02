@@ -3,6 +3,7 @@ import { runDoctor } from './commands/doctor.js'
 import { runHookBackup } from './commands/hook-backup.js'
 import { type HookCommitArgs, runHookCommit } from './commands/hook-commit.js'
 import { runRestore } from './commands/restore.js'
+import { runSetupAgents } from './commands/setup-agents.js'
 
 function parseHookArgs(argv: readonly string[]): HookCommitArgs | null {
   const { values } = parseArgs({
@@ -43,6 +44,17 @@ async function dispatch(argv: readonly string[]): Promise<number> {
         return 2
       }
       return runHookBackup(parsed)
+    }
+    case 'setup-agents': {
+      const { values } = parseArgs({
+        args: [...rest],
+        options: { repair: { type: 'boolean' }, uninstall: { type: 'boolean' } },
+        strict: false,
+      })
+      return runSetupAgents({
+        repair: values.repair === true,
+        uninstall: values.uninstall === true,
+      })
     }
     case 'restore': {
       const { values } = parseArgs({
