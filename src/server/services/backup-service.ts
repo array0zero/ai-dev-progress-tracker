@@ -22,10 +22,11 @@ import { LEASE_STALE_MS, releaseLease } from '../db/lease-repository.js'
 import { hasActiveGenerationRuns, isGenerationTerminalForCommit } from '../db/run-repository.js'
 import {
   BACKUP_APP_ID,
-  BACKUP_SCHEMA_VERSION,
-  BACKUP_TABLES,
-  type BackupCounts,
-  type BackupManifest,
+  BACKUP_SCHEMA_VERSION_V2,
+  BACKUP_TABLES_V2,
+  type BackupCountsV2,
+  type BackupManifestV2,
+  backupDataFileName,
 } from '../schemas/backup.js'
 import { containsHighConfidenceSecret } from '../security/redaction.js'
 
@@ -35,7 +36,7 @@ export const SETTLE_TIMEOUT_MS = 180_000
 /** DESIGN.md「バックアップ先」: default branch は `main` 固定。初回 push でこの branch を作る。 */
 export const BACKUP_BRANCH = 'main'
 /**
- * backup repo の `.gitattributes`。manifest.json / data/backup-v1.json を
+ * backup repo の `.gitattributes`。manifest.json / data/backup-v2.json を
  * 改行変換なし (Windows の core.autocrlf 等の影響を受けない) で checkout させ、
  * 生成時に計算した sha256 と clone 後の byte 列を一致させる。末尾は LF 固定。
  */
@@ -50,31 +51,31 @@ function sha256Hex(text: string): string {
  * backup_runs / worker_leases / log / env は含めない。
  * 各テーブルは PK 昇順、UTF-8・2-space indent・末尾 LF。
  */
-export function exportBackupData(db: Db): { dataJson: string; counts: BackupCounts } {
+export function exportBackupData(db: Db): { dataJson: string; counts: BackupCountsV2 } {
   const data: Record<string, unknown[]> = {}
   const counts: Record<string, number> = {}
-  for (const { key, table, orderBy } of BACKUP_TABLES) {
-    const rows = db.prepare(`SELECT * FROM ${table} ORDER BY ${orderBy}`).all() as Record<
-      string,
-      unknown
-    >[]
+  // 列を明示して deterministic に出す。将来の追加列が黙って混ざらない。
+  for (const { key, table, orderBy, columns } of BACKUP_TABLES_V2) {
+    const rows = db
+      .prepare(`SELECT ${columns.join(', ')} FROM ${table} ORDER BY ${orderBy}`)
+      .all() as Record<string, unknown>[]
     data[key] = rows
     counts[key] = rows.length
   }
   return {
     dataJson: `${JSON.stringify(data, null, 2)}\n`,
-    counts: counts as BackupCounts,
+    counts: counts as BackupCountsV2,
   }
 }
 
 export function buildBackupManifest(
   dataJson: string,
-  counts: BackupCounts,
+  counts: BackupCountsV2,
   now: Date,
-): { manifest: BackupManifest; manifestJson: string } {
-  const manifest: BackupManifest = {
+): { manifest: BackupManifestV2; manifestJson: string } {
+  const manifest: BackupManifestV2 = {
     appId: BACKUP_APP_ID,
-    schemaVersion: BACKUP_SCHEMA_VERSION,
+    schemaVersion: BACKUP_SCHEMA_VERSION_V2,
     createdAt: now.toISOString(),
     sha256: sha256Hex(dataJson),
     counts,
@@ -87,8 +88,8 @@ export type BackupExportResult =
       ok: true
       dataJson: string
       manifestJson: string
-      manifest: BackupManifest
-      counts: BackupCounts
+      manifest: BackupManifestV2
+      counts: BackupCountsV2
     }
   | { ok: false; code: 'SECRET_DETECTED' }
 
@@ -435,7 +436,7 @@ export async function runBackup(
   const attrInPlace =
     existsSync(attrPath) && readFileSync(attrPath, 'utf8') === BACKUP_GITATTRIBUTES
 
-  const dataPath = join(cloneDir, 'data', 'backup-v1.json')
+  const dataPath = join(cloneDir, 'data', backupDataFileName(BACKUP_SCHEMA_VERSION_V2))
   const previousData = existsSync(dataPath) ? readFileSync(dataPath, 'utf8') : null
   if (attrInPlace && previousData === exported.dataJson) {
     const head = await gitDeps.head(cloneDir)

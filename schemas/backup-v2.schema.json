@@ -1,0 +1,240 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-dev-progress-tracker.local/schemas/backup-v2.schema.json",
+  "title": "AI Dev Progress Tracker backup data (schemaVersion 2)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "projects",
+    "commits",
+    "evidence",
+    "generationRuns",
+    "runEvidence",
+    "progressSnapshots",
+    "registrationCandidates"
+  ],
+  "properties": {
+    "projects": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "name",
+          "local_path",
+          "repo_node_id",
+          "repo_owner",
+          "repo_name",
+          "repo_url",
+          "default_branch",
+          "status",
+          "summary",
+          "registration_source",
+          "review_required",
+          "review_required_at",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "local_path": { "type": "string" },
+          "repo_node_id": { "type": "string" },
+          "repo_owner": { "type": "string" },
+          "repo_name": { "type": "string" },
+          "repo_url": { "type": "string" },
+          "default_branch": { "type": "string" },
+          "status": { "type": "string", "enum": ["active", "local_missing"] },
+          "summary": { "type": "string", "maxLength": 240 },
+          "registration_source": {
+            "type": "string",
+            "enum": ["manual", "codex", "claude"]
+          },
+          "review_required": { "type": "integer", "enum": [0, 1] },
+          "review_required_at": { "type": ["string", "null"] },
+          "created_at": { "type": "string" },
+          "updated_at": { "type": "string" }
+        }
+      }
+    },
+    "commits": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["project_id", "sha", "parent_sha", "message", "authored_at", "detected_at"],
+        "properties": {
+          "project_id": { "type": "string" },
+          "sha": { "type": "string" },
+          "parent_sha": { "type": ["string", "null"] },
+          "message": { "type": "string" },
+          "authored_at": { "type": "string" },
+          "detected_at": { "type": "string" }
+        }
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "project_id",
+          "kind",
+          "external_key",
+          "source_version",
+          "title",
+          "url",
+          "payload_json",
+          "captured_at"
+        ],
+        "properties": {
+          "id": { "type": "string" },
+          "project_id": { "type": "string" },
+          "kind": { "type": "string", "enum": ["commit", "issue", "pull_request"] },
+          "external_key": { "type": "string" },
+          "source_version": { "type": "string" },
+          "title": { "type": "string" },
+          "url": { "type": ["string", "null"] },
+          "payload_json": { "type": "string" },
+          "captured_at": { "type": "string" }
+        }
+      }
+    },
+    "generationRuns": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "dedupe_key",
+          "project_id",
+          "commit_sha",
+          "mode",
+          "trigger",
+          "status",
+          "detected_at",
+          "started_at",
+          "finished_at",
+          "ai_provider",
+          "ai_cli_version",
+          "ai_model",
+          "error_code",
+          "error_message"
+        ],
+        "properties": {
+          "id": { "type": "string" },
+          "dedupe_key": { "type": "string" },
+          "project_id": { "type": "string" },
+          "commit_sha": { "type": "string" },
+          "mode": { "type": "string", "enum": ["generation", "recovery"] },
+          "trigger": {
+            "type": "string",
+            "enum": ["post_commit", "registration", "manual_recovery"]
+          },
+          "status": {
+            "type": "string",
+            "enum": ["queued", "running", "succeeded", "partial", "unrecoverable", "failed"]
+          },
+          "detected_at": { "type": "string" },
+          "started_at": { "type": ["string", "null"] },
+          "finished_at": { "type": ["string", "null"] },
+          "ai_provider": { "type": "string" },
+          "ai_cli_version": { "type": ["string", "null"] },
+          "ai_model": { "type": "string" },
+          "error_code": { "type": ["string", "null"] },
+          "error_message": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "runEvidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["run_id", "evidence_id"],
+        "properties": {
+          "run_id": { "type": "string" },
+          "evidence_id": { "type": "string" }
+        }
+      }
+    },
+    "progressSnapshots": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "generation_run_id",
+          "project_id",
+          "commit_sha",
+          "recovery_status",
+          "current_position_json",
+          "completed_items_json",
+          "next_actions_json",
+          "decisions_json",
+          "created_at"
+        ],
+        "properties": {
+          "id": { "type": "string" },
+          "generation_run_id": { "type": "string" },
+          "project_id": { "type": "string" },
+          "commit_sha": { "type": "string" },
+          "recovery_status": {
+            "type": "string",
+            "enum": ["complete", "partial", "unrecoverable"]
+          },
+          "current_position_json": { "type": "string" },
+          "completed_items_json": { "type": "string" },
+          "next_actions_json": { "type": "string" },
+          "decisions_json": { "type": "string" },
+          "created_at": { "type": "string" }
+        }
+      }
+    },
+    "registrationCandidates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "local_path",
+          "agent",
+          "status",
+          "suggested_name",
+          "detected_at",
+          "last_seen_at",
+          "prompted_at",
+          "decision_at",
+          "attempt_count",
+          "last_error_code",
+          "last_error_message",
+          "project_id"
+        ],
+        "properties": {
+          "id": { "type": "string" },
+          "local_path": { "type": "string" },
+          "agent": { "type": "string", "enum": ["codex", "claude"] },
+          "status": {
+            "type": "string",
+            "enum": ["detected", "prompted", "declined", "registering", "failed", "registered"]
+          },
+          "suggested_name": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "detected_at": { "type": "string" },
+          "last_seen_at": { "type": "string" },
+          "prompted_at": { "type": ["string", "null"] },
+          "decision_at": { "type": ["string", "null"] },
+          "attempt_count": { "type": "integer", "minimum": 0, "maximum": 2 },
+          "last_error_code": { "type": ["string", "null"] },
+          "last_error_message": { "type": ["string", "null"] },
+          "project_id": { "type": ["string", "null"] }
+        }
+      }
+    }
+  }
+}

@@ -331,7 +331,7 @@ describe('backup flow', () => {
       JSON.stringify({ appId: 'ai-dev-progress-tracker' }),
     )
     writeFileSync(join(cloneDir, '.gitattributes'), BACKUP_GITATTRIBUTES)
-    writeFileSync(join(cloneDir, 'data', 'backup-v1.json'), exportBackupData(ctx.db).dataJson)
+    writeFileSync(join(cloneDir, 'data', 'backup-v2.json'), exportBackupData(ctx.db).dataJson)
 
     const enq = enqueueBackup(ctx.db, {
       trigger: 'pre_push',
@@ -371,7 +371,7 @@ describe('backup flow', () => {
       join(cloneDir, 'manifest.json'),
       JSON.stringify({ appId: 'ai-dev-progress-tracker' }),
     )
-    writeFileSync(join(cloneDir, 'data', 'backup-v1.json'), exportBackupData(ctx.db).dataJson)
+    writeFileSync(join(cloneDir, 'data', 'backup-v2.json'), exportBackupData(ctx.db).dataJson)
 
     const enq = enqueueBackup(ctx.db, {
       trigger: 'pre_push',

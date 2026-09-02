@@ -82,6 +82,7 @@ describe('backup export', () => {
       'generationRuns',
       'progressSnapshots',
       'projects',
+      'registrationCandidates',
       'runEvidence',
     ])
     expect(dataJson).not.toContain('worker_leases')

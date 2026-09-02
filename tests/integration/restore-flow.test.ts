@@ -139,10 +139,10 @@ describe('restore flow', () => {
     }
   })
 
-  it('restores an empty v1 backup as an empty database', () => {
+  it('restores an empty v2 backup as an empty database', () => {
     const { dataJson, manifestJson } = goodExport()
     expect(JSON.parse(manifestJson)).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       counts: {
         projects: 0,
         commits: 0,
@@ -150,6 +150,7 @@ describe('restore flow', () => {
         generationRuns: 0,
         runEvidence: 0,
         progressSnapshots: 0,
+        registrationCandidates: 0,
       },
     })
 
@@ -200,6 +201,7 @@ describe('restore flow', () => {
       generationRuns: [],
       runEvidence: [],
       progressSnapshots: [],
+      registrationCandidates: [],
     }
     const dataJson = `${JSON.stringify(data, null, 2)}\n`
     const manifest = JSON.parse(manifestJson) as Record<string, unknown>
@@ -211,6 +213,7 @@ describe('restore flow', () => {
       generationRuns: 0,
       runEvidence: 0,
       progressSnapshots: 0,
+      registrationCandidates: 0,
     }
 
     const result = restoreFromBackup(dataJson, JSON.stringify(manifest), join(workDir, 'fk.db'))
@@ -267,7 +270,7 @@ describe('performRestore (CLI orchestration)', () => {
     mkdirSync(join(cloneDir, 'data'), { recursive: true })
     mkdirSync(join(cloneDir, '.git'), { recursive: true })
     writeFileSync(join(cloneDir, 'manifest.json'), exported.manifestJson)
-    writeFileSync(join(cloneDir, 'data', 'backup-v1.json'), exported.dataJson)
+    writeFileSync(join(cloneDir, 'data', 'backup-v2.json'), exported.dataJson)
   }
 
   const overrides = {
@@ -462,10 +465,10 @@ describe('restore checksum across a real git round-trip', () => {
     const consumerDir = join(workDir, 'consumer')
     execFileSync('git', ['-c', 'core.autocrlf=true', 'clone', originDir, consumerDir])
 
-    const dataJson = readFileSync(join(consumerDir, 'data', 'backup-v1.json'), 'utf8')
+    const dataJson = readFileSync(join(consumerDir, 'data', 'backup-v2.json'), 'utf8')
     const manifestJson = readFileSync(join(consumerDir, 'manifest.json'), 'utf8')
 
-    // `.gitattributes` があり、backup-v1.json は CRLF に化けていない
+    // `.gitattributes` があり、backup-v2.json は CRLF に化けていない
     expect(readFileSync(join(consumerDir, '.gitattributes'), 'utf8')).toBe(BACKUP_GITATTRIBUTES)
     expect(dataJson).not.toContain('\r\n')
 

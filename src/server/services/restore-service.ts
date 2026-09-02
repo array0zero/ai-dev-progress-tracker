@@ -5,20 +5,22 @@ import { inspectRepository } from '../adapters/git.js'
 import { runProcess } from '../adapters/process-runner.js'
 import type { AppConfig } from '../config.js'
 import { openDatabase } from '../db/connection.js'
-import { LATEST_MIGRATION_VERSION } from '../db/migrations.js'
 import { listProjects, updateProjectStatus } from '../db/project-repository.js'
 import {
   BACKUP_TABLES,
-  type BackupData,
+  BACKUP_TABLES_V2,
   type BackupManifest,
+  type BackupManifestV2,
+  backupDataFileName,
   backupDataSchema,
-  backupManifestSchema,
+  backupDataV2Schema,
+  parseBackupManifest,
 } from '../schemas/backup.js'
 import { type EnsureBackupRepoResult, ensureBackupRepo } from './backup-service.js'
 import { installHooks } from './hook-service.js'
 
 export type RestoreResult =
-  | { ok: true; tempDbPath: string; manifest: BackupManifest }
+  | { ok: true; tempDbPath: string; manifest: BackupManifest | BackupManifestV2 }
   | { ok: false; code: string; reason: string }
 
 function fail(code: string, reason: string): RestoreResult {
@@ -43,30 +45,26 @@ function removeTempDb(path: string): void {
  * DESIGN.md「Restore」の core。既存 tracker.db には一切触れず、
  * `tempDbPath` へ検証済みの新規 SQLite を構築する。
  * manifest/checksum/schema/FK/件数のいずれかが不正なら temp DB を削除して失敗を返す。
+ * manifest schemaVersion 1 (v1 backup) と 2 (v2 backup) の両方を受け付ける。
+ * v1 は import 後に openDatabase が migration 002 を適用するため、v2 列は既定値で埋まる。
  */
 export function restoreFromBackup(
   dataJson: string,
   manifestJson: string,
   tempDbPath: string,
 ): RestoreResult {
-  // 1. manifest
+  // 1. manifest (v1 / v2)
   let manifestRaw: unknown
   try {
     manifestRaw = JSON.parse(manifestJson)
   } catch {
     return fail('BACKUP_MANIFEST_INVALID', 'manifest.json is not valid JSON')
   }
-  const manifestParsed = backupManifestSchema.safeParse(manifestRaw)
-  if (!manifestParsed.success) {
-    return fail('BACKUP_MANIFEST_INVALID', manifestParsed.error.message.slice(0, 300))
+  const parsedManifest = parseBackupManifest(manifestRaw)
+  if (parsedManifest === null) {
+    return fail('BACKUP_MANIFEST_INVALID', 'manifest.json does not match backup schema v1 or v2')
   }
-  const manifest = manifestParsed.data
-  if (manifest.schemaVersion !== LATEST_MIGRATION_VERSION) {
-    return fail(
-      'BACKUP_SCHEMA_VERSION_MISMATCH',
-      `manifest schemaVersion ${manifest.schemaVersion} != ${LATEST_MIGRATION_VERSION}`,
-    )
-  }
+  const { version, manifest } = parsedManifest
 
   // 2. checksum
   if (sha256Hex(dataJson) !== manifest.sha256) {
@@ -78,13 +76,16 @@ export function restoreFromBackup(
   try {
     dataRaw = JSON.parse(dataJson)
   } catch {
-    return fail('BACKUP_DATA_INVALID', 'backup-v1.json is not valid JSON')
+    return fail('BACKUP_DATA_INVALID', `${backupDataFileName(version)} is not valid JSON`)
   }
-  const dataParsed = backupDataSchema.safeParse(dataRaw)
+  const dataParsed =
+    version === 2 ? backupDataV2Schema.safeParse(dataRaw) : backupDataSchema.safeParse(dataRaw)
   if (!dataParsed.success) {
     return fail('BACKUP_DATA_INVALID', dataParsed.error.message.slice(0, 300))
   }
-  const data: BackupData = dataParsed.data
+  const data = dataParsed.data as Record<string, ReadonlyArray<Record<string, unknown>>>
+  const tables: ReadonlyArray<{ key: string; table: string; columns: readonly string[] }> =
+    version === 2 ? BACKUP_TABLES_V2 : BACKUP_TABLES
 
   // 4. temp SQLite へ migration + import
   if (existsSync(tempDbPath)) {
@@ -95,8 +96,8 @@ export function restoreFromBackup(
     // import 中は FK を切り、投入後に foreign_key_check で一括検証する。
     db.pragma('foreign_keys = OFF')
     const importAll = db.transaction((): void => {
-      for (const { key, table, columns } of BACKUP_TABLES) {
-        const rows = data[key] as ReadonlyArray<Record<string, unknown>>
+      for (const { key, table, columns } of tables) {
+        const rows = data[key] ?? []
         if (rows.length === 0) {
           continue
         }
@@ -111,6 +112,12 @@ export function restoreFromBackup(
     })
     importAll()
 
+    // v1 backup は migration 002 適用済みの空 DB へ v1 列だけを入れるため、
+    // 002 の backfill (summary = name) をここで再適用する。
+    if (version === 1) {
+      db.prepare("UPDATE projects SET summary = name WHERE summary = ''").run()
+    }
+
     // 5. FK 整合性
     const fkViolations = db.prepare('PRAGMA foreign_key_check').all() as unknown[]
     if (fkViolations.length > 0) {
@@ -118,9 +125,10 @@ export function restoreFromBackup(
     }
 
     // 6. 件数一致
-    for (const { key, table } of BACKUP_TABLES) {
+    const counts = manifest.counts as Record<string, number>
+    for (const { key, table } of tables) {
       const actual = (db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n
-      const expected = manifest.counts[key]
+      const expected = counts[key] ?? 0
       if (actual !== expected) {
         return failAndCleanup(
           db,
@@ -243,7 +251,18 @@ export async function performRestore(
   }
 
   const manifestPath = join(cloneDir, 'manifest.json')
-  const dataPath = join(cloneDir, 'data', 'backup-v1.json')
+  // data ファイル名は manifest の schemaVersion で決まる (v1 backup も読み続ける)。
+  let dataPath = join(cloneDir, 'data', backupDataFileName(1))
+  if (existsSync(manifestPath)) {
+    try {
+      const parsed = parseBackupManifest(JSON.parse(readFileSync(manifestPath, 'utf8')))
+      if (parsed !== null) {
+        dataPath = join(cloneDir, 'data', backupDataFileName(parsed.version))
+      }
+    } catch {
+      // manifest が壊れている場合は restoreFromBackup 側で BACKUP_MANIFEST_INVALID になる。
+    }
+  }
   if (!existsSync(manifestPath) || !existsSync(dataPath)) {
     return {
       ok: false,
