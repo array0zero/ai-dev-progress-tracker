@@ -29,7 +29,8 @@
     "real:codex-detection": "tsx scripts/real-check-codex-detection.ts",
     "real:claude-detection": "tsx scripts/real-check-claude-detection.ts",
     "real:github-registration": "tsx scripts/real-check-github-registration.ts",
-    "real:backup-restore": "tsx scripts/real-check-backup-restore.ts"
+    "real:backup-restore": "tsx scripts/real-check-backup-restore.ts",
+    "real:regeneration": "tsx scripts/real-check-regeneration.ts"
   },
   "dependencies": {
     "@fastify/static": "10.1.3",
