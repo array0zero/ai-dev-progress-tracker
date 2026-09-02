@@ -12,6 +12,8 @@ export const WAITING_FOR_GENERATION = '進捗生成待ち'
 export const HEAD_LOOKUP_CONCURRENCY = 4
 
 export interface Freshness {
+  /** 採用できる snapshot があるか。無いときだけ current の固定 fallback を使う。 */
+  hasSnapshot: boolean
   latestCommitSha: string | null
   lastGeneratedCommitSha: string | null
   lastGeneratedAt: string | null
@@ -85,6 +87,7 @@ export function computeFreshness(
   const lastGeneratedAt = progress?.snapshot.createdAt ?? null
 
   return {
+    hasSnapshot: view !== null,
     latestCommitSha,
     lastGeneratedCommitSha,
     lastGeneratedAt,
@@ -97,10 +100,13 @@ export function computeFreshness(
       lastGeneratedAt,
       project.reviewRequiredAt,
     ]),
+    // snapshot がある場合の needs_input は v1 どおり null のままにする (UI が「要補完」を出す)。
     currentPosition:
-      view === null || view.currentPosition.status === 'needs_input'
+      view === null
         ? fallbackCurrentPosition(latestCommitSha)
-        : view.currentPosition.text,
+        : view.currentPosition.status === 'needs_input'
+          ? null
+          : view.currentPosition.text,
     status: localMissing ? 'local_missing' : project.status,
   }
 }

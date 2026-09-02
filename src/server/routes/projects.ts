@@ -90,7 +90,7 @@ function toSummaryV2(
   return {
     ...summary,
     lastCommitSha: freshness.latestCommitSha ?? summary.lastCommitSha,
-    currentPosition: summary.currentPosition ?? freshness.currentPosition,
+    currentPosition: freshness.hasSnapshot ? summary.currentPosition : freshness.currentPosition,
     summary: project.summary,
     latestCommitSha: freshness.latestCommitSha,
     lastGeneratedCommitSha: freshness.lastGeneratedCommitSha,
@@ -211,7 +211,7 @@ export function projectRoutes(db: Db): FastifyPluginAsync {
       return {
         ...v2,
         ...result.detail,
-        currentPosition: result.detail.currentPosition ?? v2.currentPosition,
+        currentPosition: v2.currentPosition,
         lastCommitSha: v2.latestCommitSha ?? result.detail.lastCommitSha,
       }
     })
