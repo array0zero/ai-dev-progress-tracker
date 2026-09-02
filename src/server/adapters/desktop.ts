@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { runProcess } from './process-runner.js'
+import { buildSpawnSpec, runProcess } from './process-runner.js'
 
 const BROWSER_OPEN_TIMEOUT_MS = 3_000
 
@@ -44,6 +44,28 @@ export async function isServerHealthy(port: number, timeoutMs = 500): Promise<bo
       signal: AbortSignal.timeout(timeoutMs),
     })
     return response.ok
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 相手の結果を待たずに起動する (Codex notify chain 用)。
+ * 起動できたかだけを返し、非 0 終了 / timeout は呼び出し側へ伝えない。
+ * Windows の .cmd/.bat shim も process-runner と同じ方式で解決する。
+ */
+export function spawnDetachedCommand(command: string, args: readonly string[]): boolean {
+  try {
+    const spec = buildSpawnSpec(command, args)
+    const child = spawn(spec.file, spec.args, {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+      windowsVerbatimArguments: spec.windowsVerbatimArguments,
+    })
+    child.on('error', () => undefined)
+    child.unref()
+    return true
   } catch {
     return false
   }

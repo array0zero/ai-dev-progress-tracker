@@ -1,9 +1,10 @@
 # DESIGN.md — 設計書
 
 project_id: ai-dev-progress-tracker  
-version: 2.1  
+version: 2.2  
 date: 2026-09-02  
-source: PLAN.md v1.1 + 公開 `ai-dev-progress-tracker` commit `c281f91` / DESIGN.md v1.7 + 2026-09-02実測環境
+source: PLAN.md v1.1 + 公開 `ai-dev-progress-tracker` commit `c281f91` / DESIGN.md v1.7 + 2026-09-02実測環境  
+revision 2.2: D006 (Codex notify) を「競合エラー」から「既存notifyを退避してchain」へ変更
 
 ## 0. 受入検査・実測環境・v1.3〜v1.7互換インベントリ
 
@@ -142,7 +143,7 @@ v2追加:
   - `setup-agents` CLIでCodex/Claude Codeのユーザー設定へtracker entryを各1件だけ追加する。
   - Codexの必須検知経路はtop-level `notify`。1 turn完了後に渡されるJSONの`cwd`を使う。
   - Claude Codeの必須検知経路はuser-level `UserPromptSubmit` command hook。JSON stdinの`cwd`を使う。
-  - 既存設定を消さずにmergeする。競合時は後述の固定エラーとする。
+  - 既存設定を消さずにmergeする。Codexの既存`notify`は退避してchainし、chainできない形のときだけ固定エラーとする。
 - **Agent event CLI**
   - event payloadからagent種別・event type・`cwd`だけを使い、会話本文・prompt・transcriptを保存しない。
   - `cwd`がGit配下なら`git rev-parse --show-toplevel`、Git外なら`cwd`をcanonical local pathとする。
@@ -168,20 +169,32 @@ v2追加:
 
 ### Codex user integration 固定仕様
 
-対象: `~/.codex/config.toml` のtop-level `notify`。
+対象: `~/.codex/config.toml` のtop-level `notify`。Codexは`notify`を1件しか持てないため、既存値は削除せずchainする。
 
 1. `smol-toml`で既存TOMLをparseし、文法が壊れていれば無変更で`INVALID_AGENT_CONFIG`。
 2. `notify`未設定なら、最初のtable headerより前へmanaged blockを挿入する。既存文字列・コメント・table順は変更しない。
 3. tracker managed blockが存在しargvが一致すればno-op。
-4. 別の`notify`が存在する場合は **`CODEX_NOTIFY_CONFLICT`**。既存値を上書きしない。
+4. 別の`notify`が**string配列**として存在する場合は **chain** する。
+   - 既存`notify`のraw行をbase64化して managed block内の `# previous-notify:` 行へ退避する。
+   - 既存の raw 行を削除し、同じ位置へ managed block を挿入する。
+   - tracker argvへ `--chain <既存argvのJSON>` を追加する。
+   - 既存argvがstring配列でない場合だけ **`CODEX_NOTIFY_CONFLICT`** とし、無変更で停止する。
 5. managed blockにはsetup時点の `process.execPath` と `<repo>/dist/cli/index.js` の**絶対パス**を入れる。
-6. repository移動後は`doctor`が`AGENT_HOOK_PATH_STALE`を返し、`setup-agents --repair`でtracker managed blockだけ再生成する。
+6. repository移動後は`doctor`が`AGENT_HOOK_PATH_STALE`を返し、`setup-agents --repair`でtracker managed blockだけ再生成する。退避済み `# previous-notify:` は再生成後も保持する。
 7. notifyのJSONは末尾argvとして受け、`type=agent-turn-complete`以外は無視する。
 8. handler内部エラーでもCodex本体を失敗させずexit 0。redacted logへerror codeだけ記録する。
+9. chain実行の固定順序と分離:
+   - handlerは最初に chain 対象を **detached / stdio ignore / unref** で起動し、待たない。
+   - 起動引数は「退避したargv + Codexから受け取ったJSON payload」。
+   - chain対象のspawn失敗・非0終了・timeoutはtracker側の検知を止めない。
+   - tracker側の失敗 (DB/candidate/server/browser) はchain対象の実行を妨げない。
+   - `--chain`の値がJSONとしてparseできない場合はchainをskipし、検知だけ続行する。
+10. `setup-agents --uninstall` は managed block を削除し、`# previous-notify:` があればbase64を復号して**元のraw行をそのまま書き戻す**。退避がなければ block ごと削除する。
 
 ```toml
 # >>> ai-dev-progress-tracker managed notify >>>
-notify = ["<absolute node executable>", "<absolute dist/cli/index.js>", "agent-event", "--agent", "codex", "--input", "argv"]
+# previous-notify: <base64 of the original raw notify line(s), chain 時のみ>
+notify = ["<absolute node executable>", "<absolute dist/cli/index.js>", "agent-event", "--agent", "codex", "--input", "argv", "--chain", "<original argv JSON>"]
 # <<< ai-dev-progress-tracker managed notify <<<
 ```
 
@@ -730,7 +743,7 @@ node dist/cli/index.js restore --force
 | 422 | `REPOSITORY_MISMATCH` | originと対象GitHub repo不一致 |
 | 422 | `GITHUB_AUTH_REQUIRED` | `gh auth status`失敗 |
 | 422 | `HOOK_UNSUPPORTED` | 既存git hookを保持不能 |
-| 422 | `CODEX_NOTIFY_CONFLICT` | user configに別notify |
+| 422 | `CODEX_NOTIFY_CONFLICT` | user configの既存notifyがstring配列でなくchainできない |
 | 422 | `CLAUDE_HOOKS_DISABLED` | user settingsでhooks無効 |
 | 422 | `AGENT_HOOK_PATH_STALE` | user設定が移動前のtracker絶対pathを参照 |
 | 422 | `INVALID_AGENT_CONFIG` | Codex/Claude user configが構文不正 |
@@ -1019,7 +1032,8 @@ npm start
 ```
 
 - `setup-agents`前にbuild必須。user configへ`dist/cli/index.js`絶対pathを記録する。
-- Codexに別`notify`があれば`CODEX_NOTIFY_CONFLICT`で停止し無変更。
+- Codexに別`notify`があれば削除せずchainする。既存raw行はmanaged block内へ退避し、`--uninstall`で書き戻す。
+- 既存notifyがstring配列でなくchainできない形なら`CODEX_NOTIFY_CONFLICT`で停止し無変更。
 - Claude `disableAllHooks=true`も無変更で停止。
 - setup後`doctor`で`codexDetection=ready`, `claudeDetection=ready`。
 - appを移動した場合はbuild後`setup-agents --repair`。
@@ -1056,7 +1070,7 @@ agent-eventがserver未起動なら同じbuildの`dist/server/index.js`をdetach
 | D003 | runtime/CLI version | minimumのみ | 指示と実測環境に一致 | exact pin/upper bound: 却下 |
 | D004 | Codex初回検知 | user top-level `notify` | cwd取得可能、hook trustを必須条件にしない | lifecycle hookのみ: 却下 |
 | D005 | Claude初回検知 | user `UserPromptSubmit` hook | 最初のpromptでcwd取得 | SessionEnd/transcript監視: 却下 |
-| D006 | Codex notify競合 | 上書き/chainせずerror | 既存notifyの秘密値複製を避ける | wrapper chain: 却下 |
+| D006 | Codex notify競合 | 既存notifyを退避してchainする。chainできない形のときだけerror | Codexのnotifyは1件しか持てず、他ツール(Codex computer-use等)が自動設定するため、削除要求は公開リポジトリの前提として不適切。既存argvをmanaged blockへ退避し、`--uninstall`で元のraw行へ復元できるので破壊しない。chain対象はdetachedで起動し待たないため、双方の失敗が相互に伝播しない | 上書き: 却下。利用者へ既存notifyの削除を要求: 却下 (2026-09-02 revision 2.2 でD006を更新) |
 | D007 | 未Git project | 承認後`git init -b main` | repoなし/commitなしでも登録完結 | Git必須拒否: 却下 |
 | D008 | auto repo名 | fixed normalization、衝突error | agent判断を残さない | suffix自動採番: 却下 |
 | D009 | registration retry | total2 attempts、2s | 無限retry回避 | 3回/exponential: 却下 |

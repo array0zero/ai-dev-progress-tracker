@@ -1,9 +1,9 @@
 # TASKS.md — 実装タスクリスト
 
 project_id: ai-dev-progress-tracker  
-version: 2.1  
+version: 2.2  
 date: 2026-09-02  
-source: DESIGN.md v2.1
+source: DESIGN.md v2.2
 
 ## 依存関係
 
@@ -163,7 +163,7 @@ npm run test:unit -- tests/unit/candidate-repository.test.ts; if ($LASTEXITCODE)
   - 変更: `package.json`
 - 実装内容:
   1. Codex `~/.codex/config.toml`のtop-level notifyを`smol-toml`で検査しmanaged blockをroot位置へ挿入。
-  2. 別notifyがあれば`CODEX_NOTIFY_CONFLICT`で**無変更**。
+  2. 別notifyがstring配列ならchainする。既存raw行をmanaged blockへbase64退避し、tracker argvへ`--chain <既存argv JSON>`を付ける。`--uninstall`で元のraw行を書き戻す。string配列でなくchainできない形のときだけ`CODEX_NOTIFY_CONFLICT`で**無変更**。
   3. Claude `~/.claude/settings.json`の`hooks.UserPromptSubmit`へtracker handlerをmergeし他設定を保持。
   4. `--repair`はtracker entryだけ更新、`--uninstall`はtracker entryだけ除去。
   5. version: Node>=24.15.0, Git>=2.45.0, gh>=2.98.0, Codex>=0.152.0, Claude>=2.1.258。上限なし。
@@ -172,7 +172,8 @@ npm run test:unit -- tests/unit/candidate-repository.test.ts; if ($LASTEXITCODE)
   - [ ] **初回実行**: temp HOMEの設定0件からCodex/Claude entryが各1件作成。
   - [ ] **ゼロ件・空入力**: file未存在/空TOML/空JSONを正常初期化。
   - [ ] **外部往復**: temp HOMEへ書いた設定をfilesystemから再読込し、argv/argsの絶対pathがexpectedと一致。
-  - [ ] Codex notify競合時に元file byte列が不変。
+  - [ ] chainできない既存notifyでは元file byte列が不変。
+  - [ ] chain install→uninstallで元のnotify raw行がbyte一致で復元される。
   - [ ] Claude既存hook/未知keyを消さない。
   - [ ] install→installで1件、install→uninstallでtracker entryだけ消える。
 - 検証コマンド:
@@ -196,7 +197,7 @@ npm run test:unit -- tests/unit/agent-integration.test.ts; if ($LASTEXITCODE) { 
   - 変更: `src/server/db/candidate-repository.ts`
   - 変更: `tests/helpers/temp-repo.ts`
 - 実装内容:
-  1. Codexはargv JSON、Claudeはstdin JSONをparse。
+  1. Codexはargv JSON、Claudeはstdin JSONをparse。`--chain`があれば最初にchain対象をdetachedで起動し、待たない。
   2. event typeとcwdだけを使用し会話fieldを保存しない。
   3. Git配下ならtop-level、Git外ならcwdをcanonical pathにする。
   4. project既登録ならno-op、未登録ならlocal_path unique candidate upsert。
@@ -210,6 +211,7 @@ npm run test:unit -- tests/unit/agent-integration.test.ts; if ($LASTEXITCODE) { 
   - [ ] 同folderへ10 eventでもcandidate 1件。
   - [ ] registered projectからcandidateを作らない。
   - [ ] prompt/transcript/messageがDB/logに0件。
+  - [ ] chain対象が失敗してもcandidateは作られ、tracker側が失敗してもchain対象は起動済み。
 - 検証コマンド:
 
 ```powershell

@@ -49,13 +49,22 @@ async function dispatch(argv: readonly string[]): Promise<number> {
     case 'agent-event': {
       const { values, positionals } = parseArgs({
         args: [...rest],
-        options: { agent: { type: 'string' }, input: { type: 'string' } },
+        options: {
+          agent: { type: 'string' },
+          input: { type: 'string' },
+          chain: { type: 'string' },
+        },
         allowPositionals: true,
         strict: false,
       })
       const agent = values.agent === 'claude' ? 'claude' : 'codex'
       const input = values.input === 'stdin' ? 'stdin' : 'argv'
-      const args: AgentEventArgs = { agent, input, payload: positionals.join(' ') }
+      const args: AgentEventArgs = {
+        agent,
+        input,
+        payload: positionals.join(' '),
+        chain: typeof values.chain === 'string' ? values.chain : undefined,
+      }
       return runAgentEvent(args)
     }
     case 'setup-agents': {

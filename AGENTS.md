@@ -47,7 +47,7 @@ Claude Code用に、リポジトリ直下の`CLAUDE.md`をこの`AGENTS.md`とby
 - `DESIGN.md`の技術選定、data schema、interface、directory treeを変更しないと解決できない。
 - 利用者の認証が不足し、`gh auth status` / `codex login status` / `claude auth status`が要求状態を満たさない。
 - 外部操作が課金開始、新規有料契約、fixture以外のrepository削除/force-pushを要求する。
-- Codex user configに既存の別`notify`があり`CODEX_NOTIFY_CONFLICT`になった。
+- Codex user configの既存`notify`がstring配列でなくchainできず`CODEX_NOTIFY_CONFLICT`になった。
 - Claude user settingsが`disableAllHooks=true`で`CLAUDE_HOOKS_DISABLED`になった。
 - GitHub実機fixture名と同名の既存repoがあるが、DESIGN.md指定markerがなくfixture所有と確認できない。
 - 設計に矛盾があり、両方を同時に満たせない。
@@ -72,6 +72,7 @@ Claude Code用に、リポジトリ直下の`CLAUDE.md`をこの`AGENTS.md`とby
 - retryはinitial+1回、間隔2秒から変更しない。
 - regenerate成功時に`review_required`を自動解除しない。
 - `unreflected`をDB boolとして保存しない。
+- Codexの既存`notify`を削除・上書きしない。chainと退避・復元で共存させる (DESIGN v2.2 D006)。
 - v1.7の`PROMPT_CONTRACT`意味要件を削除・弱化しない。
 - `validateProgressOutput`をv1.6以前のstrict挙動へ戻し、non-canonical needs_inputだけでrun全体を失効させない。
 - default `recovery-cases.json`へ`mustContain` / `mustNotContain`の自然言語期待値を必須として再追加しない。現行v1.7の任意補助check機能自体は削除しない。

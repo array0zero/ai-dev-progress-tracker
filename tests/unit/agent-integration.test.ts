@@ -123,15 +123,6 @@ describe('agent integration installer', () => {
     expect(lines).toContain('command = "demo"')
   })
 
-  it('leaves the Codex config byte-identical when another notify exists', () => {
-    const original = '# user config\nnotify = ["my-notifier", "--flag"]\n\n[tui]\ntheme = "dark"\n'
-    writeCodex(original)
-    const outcomes = setupAgents('install', options())
-    expect(outcomes[0]).toEqual({ agent: 'codex', ok: false, code: 'CODEX_NOTIFY_CONFLICT' })
-    expect(readCodex()).toBe(original)
-    expect(inspectAgentIntegration(options()).codexDetection).toBe('conflict')
-  })
-
   it('reports INVALID_AGENT_CONFIG and changes nothing for broken TOML', () => {
     const broken = 'notify = [unclosed\n'
     writeCodex(broken)
@@ -244,5 +235,134 @@ describe('agent integration installer', () => {
       codexDetection: 'not_installed',
       claudeDetection: 'not_installed',
     })
+  })
+})
+
+describe('Codex notify chain (DESIGN v2.2 D006)', () => {
+  let home: string
+
+  const options = (cliPath = CLI_PATH) => ({ home, nodePath: NODE_PATH, cliPath })
+  const codexPath = (): string => join(home, '.codex', 'config.toml')
+  const readCodex = (): string => readFileSync(codexPath(), 'utf8')
+
+  function writeCodex(text: string): void {
+    mkdirSync(join(home, '.codex'), { recursive: true })
+    writeFileSync(codexPath(), text, 'utf8')
+  }
+
+  function notifyArgv(): unknown {
+    const line = readCodex()
+      .split('\n')
+      .find((value) => value.startsWith('notify = '))
+    return JSON.parse(line?.replace('notify = ', '') ?? '[]')
+  }
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'adpt-chain-'))
+  })
+
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true })
+  })
+
+  const EXISTING = ['C:\\\\tools\\\\other-notifier.exe', 'turn-ended']
+  const EXISTING_LINE = `notify = ${JSON.stringify(EXISTING)}`
+
+  it('chains an existing notify instead of failing', () => {
+    writeCodex(`# user config\n${EXISTING_LINE}\n\n[tui]\ntheme = "dark"\n`)
+
+    const outcomes = setupAgents('install', options())
+    expect(outcomes[0]).toEqual({ agent: 'codex', ok: true, state: 'chained' })
+
+    const argv = notifyArgv() as string[]
+    expect(argv.slice(0, 7)).toEqual(codexNotifyArgv(NODE_PATH, CLI_PATH))
+    expect(argv[7]).toBe('--chain')
+    expect(JSON.parse(argv[8] ?? '[]')).toEqual(EXISTING)
+
+    // 既存の他設定は残り、managed block は元の notify 行の位置に入る
+    expect(readCodex()).toContain('# user config')
+    expect(readCodex()).toContain('theme = "dark"')
+    expect(readCodex().split('notify = ')).toHaveLength(2)
+    expect(inspectAgentIntegration(options()).codexDetection).toBe('ready')
+  })
+
+  it('restores the original notify line byte-for-byte on uninstall', () => {
+    const original = `# user config\n${EXISTING_LINE}\n\n[tui]\ntheme = "dark"\n`
+    writeCodex(original)
+
+    setupAgents('install', options())
+    expect(setupAgents('uninstall', options())[0]).toEqual({
+      agent: 'codex',
+      ok: true,
+      state: 'removed',
+    })
+    expect(readCodex()).toContain(EXISTING_LINE)
+    expect(readCodex()).not.toContain(CODEX_BLOCK_START)
+    expect(JSON.parse(String(notifyArgv() ? JSON.stringify(notifyArgv()) : '[]'))).toEqual(EXISTING)
+  })
+
+  it('keeps the chained argv through install -> install and --repair', () => {
+    writeCodex(`${EXISTING_LINE}\n`)
+    setupAgents('install', options())
+
+    expect(setupAgents('install', options())[0]).toEqual({
+      agent: 'codex',
+      ok: true,
+      state: 'unchanged',
+    })
+
+    expect(setupAgents('repair', options(MOVED_CLI_PATH))[0]).toEqual({
+      agent: 'codex',
+      ok: true,
+      state: 'updated',
+    })
+    const argv = notifyArgv() as string[]
+    expect(argv[1]).toBe(MOVED_CLI_PATH)
+    expect(JSON.parse(argv[8] ?? '[]')).toEqual(EXISTING)
+
+    // repair 後も uninstall で元へ戻せる
+    setupAgents('uninstall', options(MOVED_CLI_PATH))
+    expect(readCodex()).toContain(EXISTING_LINE)
+  })
+
+  it('chains a multi-line notify array and restores it verbatim', () => {
+    const original = 'notify = [\n  "C:\\\\tools\\\\other.exe",\n  "turn-ended",\n]\n'
+    writeCodex(original)
+
+    expect(setupAgents('install', options())[0]).toMatchObject({ ok: true, state: 'chained' })
+    expect(JSON.parse((notifyArgv() as string[])[8] ?? '[]')).toEqual([
+      'C:\\tools\\other.exe',
+      'turn-ended',
+    ])
+
+    setupAgents('uninstall', options())
+    expect(readCodex()).toBe(original)
+  })
+
+  it('still refuses a notify that is not a string array', () => {
+    const original = 'notify = 42\n'
+    writeCodex(original)
+    expect(setupAgents('install', options())[0]).toEqual({
+      agent: 'codex',
+      ok: false,
+      code: 'CODEX_NOTIFY_CONFLICT',
+    })
+    expect(readCodex()).toBe(original)
+    expect(inspectAgentIntegration(options()).codexDetection).toBe('conflict')
+  })
+
+  it('reports a config with only a foreign notify as not installed yet', () => {
+    writeCodex(`${EXISTING_LINE}\n`)
+    expect(inspectAgentIntegration(options()).codexDetection).toBe('not_installed')
+  })
+
+  it('leaves the no-chain case unchanged', () => {
+    setupAgents('install', options())
+    const argv = notifyArgv() as string[]
+    expect(argv).toEqual(codexNotifyArgv(NODE_PATH, CLI_PATH))
+    expect(readCodex()).not.toContain('previous-notify')
+
+    setupAgents('uninstall', options())
+    expect(readCodex()).not.toContain('notify = ')
   })
 })

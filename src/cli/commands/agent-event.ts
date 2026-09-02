@@ -1,6 +1,11 @@
 import { realpathSync, statSync } from 'node:fs'
 import { basename, isAbsolute } from 'node:path'
-import { isServerHealthy, openUrl, spawnDetachedServer } from '../../server/adapters/desktop.js'
+import {
+  isServerHealthy,
+  openUrl,
+  spawnDetachedCommand,
+  spawnDetachedServer,
+} from '../../server/adapters/desktop.js'
 import { runProcess } from '../../server/adapters/process-runner.js'
 import { type AppConfig, loadConfig } from '../../server/config.js'
 import { markPrompted, upsertDetected } from '../../server/db/candidate-repository.js'
@@ -20,10 +25,14 @@ export interface AgentEventArgs {
   input: 'argv' | 'stdin'
   /** `--input argv` のときの末尾 JSON。 */
   payload?: string
+  /** 退避した既存 notify の argv (JSON 配列文字列)。DESIGN v2.2 D006 の chain。 */
+  chain?: string
 }
 
 export interface AgentEventOptions {
   config?: AppConfig
+  /** テスト用 seam。chain 対象の起動を差し替える。 */
+  spawnChain?: (command: string, args: readonly string[]) => boolean
   db?: Db
   now?: () => Date
   readStdin?: () => Promise<string>
@@ -45,6 +54,40 @@ function readStdinText(): Promise<string> {
     process.stdin.on('error', () => resolve(''))
     setTimeout(finish, 2_000).unref()
   })
+}
+
+/**
+ * 退避した既存 notify を、受け取った payload をそのまま渡して起動する。
+ * detached / 待たない / 例外を伝播しないので、chain 対象と tracker は互いを止めない。
+ */
+function runChainedNotify(
+  chain: string | undefined,
+  payload: string,
+  spawnChain: (command: string, args: readonly string[]) => boolean,
+  logger: Logger,
+): void {
+  if (chain === undefined || chain === '') {
+    return
+  }
+  let argv: unknown
+  try {
+    argv = JSON.parse(chain)
+  } catch {
+    logger.warn('chained notify argv is not valid JSON', { error_code: 'INVALID_AGENT_CONFIG' })
+    return
+  }
+  if (!Array.isArray(argv) || argv.length === 0 || argv.some((item) => typeof item !== 'string')) {
+    logger.warn('chained notify argv is not a string array', {
+      error_code: 'INVALID_AGENT_CONFIG',
+    })
+    return
+  }
+  const [command, ...rest] = argv as string[]
+  if (command === undefined) {
+    return
+  }
+  const started = spawnChain(command, payload === '' ? rest : [...rest, payload])
+  logger.info('chained notify dispatched', { chained_started: started })
 }
 
 /** event payload からは event 種別と cwd だけを取り出す。会話本文は読まない。 */
@@ -142,6 +185,8 @@ export async function runAgentEvent(
   try {
     const raw =
       args.input === 'argv' ? (args.payload ?? '') : await (options.readStdin ?? readStdinText)()
+    // chain 対象は tracker の処理より先に、結果を待たずに起動する。
+    runChainedNotify(args.chain, raw, options.spawnChain ?? spawnDetachedCommand, logger)
     const cwd = extractWorkdir(args.agent, raw)
     if (cwd === null) {
       logger.info('agent event ignored', { agent: args.agent })

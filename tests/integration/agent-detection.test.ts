@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { mkdirSync, readFileSync, realpathSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { runAgentEvent } from '../../src/cli/commands/agent-event.js'
@@ -266,5 +266,181 @@ describe('agent event detection', () => {
     } finally {
       folder.cleanup()
     }
+  })
+})
+
+describe('Codex notify chain (DESIGN v2.2 D006)', () => {
+  let ctx: TestDb
+  let config: AppConfig
+  let dataDir: TempDir
+  let folder: TempDir
+
+  const options = (overrides: Record<string, unknown> = {}) => ({
+    config,
+    db: ctx.db,
+    ensureServer: async () => true,
+    openUrl: async () => true,
+    ...overrides,
+  })
+
+  /** marker file を書いてから指定 exit code で終わる chain 対象。 */
+  function chainScript(markerPath: string, exitCode: number): string[] {
+    return [
+      process.execPath,
+      '-e',
+      `require('node:fs').writeFileSync(${JSON.stringify(markerPath)}, process.argv.slice(1).join('\\u0000')); process.exit(${exitCode})`,
+    ]
+  }
+
+  async function waitForFile(path: string, timeoutMs = 10_000): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      if (existsSync(path)) {
+        return true
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    }
+    return false
+  }
+
+  beforeEach(() => {
+    ctx = createTestDb()
+    dataDir = createTempDir('adpt-chain-data-')
+    folder = createTempDir('adpt-chain-project-')
+    config = loadConfig({ TRACKER_DATA_DIR: dataDir.root, TRACKER_PORT: '4317' })
+  })
+
+  afterEach(() => {
+    ctx.cleanup()
+    dataDir.cleanup()
+    folder.cleanup()
+  })
+
+  it('starts the chained notify with the original payload and still detects the folder', async () => {
+    const marker = join(dataDir.root, 'chain-ok.txt')
+    const payload = codexEvent(folder.root)
+
+    expect(
+      await runAgentEvent(
+        {
+          agent: 'codex',
+          input: 'argv',
+          payload,
+          chain: JSON.stringify(chainScript(marker, 0)),
+        },
+        options(),
+      ),
+    ).toBe(0)
+
+    expect(await waitForFile(marker)).toBe(true)
+    // chain 対象は Codex から受け取った JSON をそのまま最後の引数で受け取る
+    expect(readFileSync(marker, 'utf8').split(' ').at(-1)).toBe(payload)
+    expect(listCandidates(ctx.db)).toHaveLength(1)
+  })
+
+  it('keeps detecting when the chained notify exits non-zero', async () => {
+    const marker = join(dataDir.root, 'chain-fail.txt')
+
+    expect(
+      await runAgentEvent(
+        {
+          agent: 'codex',
+          input: 'argv',
+          payload: codexEvent(folder.root),
+          chain: JSON.stringify(chainScript(marker, 1)),
+        },
+        options(),
+      ),
+    ).toBe(0)
+
+    expect(await waitForFile(marker)).toBe(true)
+    expect(listCandidates(ctx.db)).toHaveLength(1)
+    expect(listCandidates(ctx.db)[0]?.status).toBe('prompted')
+  })
+
+  it('keeps detecting when the chained command cannot be spawned at all', async () => {
+    expect(
+      await runAgentEvent(
+        {
+          agent: 'codex',
+          input: 'argv',
+          payload: codexEvent(folder.root),
+          chain: JSON.stringify(['definitely-not-an-executable-xyz', '--flag']),
+        },
+        options(),
+      ),
+    ).toBe(0)
+    expect(listCandidates(ctx.db)).toHaveLength(1)
+  })
+
+  it('starts the chained notify even when the tracker side fails', async () => {
+    const marker = join(dataDir.root, 'chain-tracker-failed.txt')
+    // dbPath をディレクトリにして tracker 側を必ず失敗させる
+    const brokenDir = createTempDir('adpt-chain-broken-')
+    mkdirSync(join(brokenDir.root, 'tracker.db'), { recursive: true })
+    const brokenConfig = loadConfig({ TRACKER_DATA_DIR: brokenDir.root, TRACKER_PORT: '4317' })
+
+    try {
+      expect(
+        await runAgentEvent(
+          {
+            agent: 'codex',
+            input: 'argv',
+            payload: codexEvent(folder.root),
+            chain: JSON.stringify(chainScript(marker, 0)),
+          },
+          { config: brokenConfig, ensureServer: async () => true, openUrl: async () => true },
+        ),
+      ).toBe(0)
+
+      expect(await waitForFile(marker)).toBe(true)
+      expect(listCandidates(ctx.db)).toEqual([])
+    } finally {
+      brokenDir.cleanup()
+    }
+  })
+
+  it('skips an invalid chain payload without blocking detection', async () => {
+    const dispatched: string[][] = []
+    for (const chain of [
+      'not json',
+      JSON.stringify({}),
+      JSON.stringify([]),
+      JSON.stringify([1, 2]),
+    ]) {
+      const folderForCase = createTempDir('adpt-chain-invalid-')
+      try {
+        expect(
+          await runAgentEvent(
+            { agent: 'codex', input: 'argv', payload: codexEvent(folderForCase.root), chain },
+            options({
+              spawnChain: (command: string, args: readonly string[]) => {
+                dispatched.push([command, ...args])
+                return true
+              },
+            }),
+          ),
+        ).toBe(0)
+      } finally {
+        folderForCase.cleanup()
+      }
+    }
+    expect(dispatched).toEqual([])
+    expect(listCandidates(ctx.db)).toHaveLength(4)
+  })
+
+  it('does not dispatch anything when there is no chain target', async () => {
+    const dispatched: string[][] = []
+    await runAgentEvent(
+      { agent: 'codex', input: 'argv', payload: codexEvent(folder.root) },
+      options({
+        spawnChain: (command: string, args: readonly string[]) => {
+          dispatched.push([command, ...args])
+          return true
+        },
+      }),
+    )
+    expect(dispatched).toEqual([])
+    expect(listCandidates(ctx.db)).toHaveLength(1)
   })
 })

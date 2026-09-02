@@ -32,7 +32,11 @@ export interface ResolvedIntegration {
 }
 
 export type AgentSetupOutcome =
-  | { agent: AgentName; ok: true; state: 'installed' | 'updated' | 'unchanged' | 'removed' }
+  | {
+      agent: AgentName
+      ok: true
+      state: 'installed' | 'chained' | 'updated' | 'unchanged' | 'removed'
+    }
   | { agent: AgentName; ok: false; code: string }
 
 /** setup 時点の絶対 path を user 設定へ書き込む (DESIGN: repository移動後は --repair)。 */
@@ -97,42 +101,144 @@ function writeText(path: string, text: string): void {
 
 // --- Codex --------------------------------------------------------------
 
-export type CodexConfigState = 'absent' | 'managed' | 'stale' | 'conflict' | 'invalid'
+export type CodexConfigState = 'absent' | 'managed' | 'stale' | 'chainable' | 'conflict' | 'invalid'
 
-export function inspectCodexConfig(
-  text: string,
-  expectedArgv: readonly string[],
-): CodexConfigState {
+const PREVIOUS_NOTIFY_PREFIX = '# previous-notify: '
+
+export interface CodexInspection {
+  state: CodexConfigState
+  /** chain 対象の既存 argv (chainable / managed with chain のとき)。 */
+  chainArgv: string[] | null
+  /** 退避済みの元 raw 行 (managed のとき)。 */
+  previousRaw: string | null
+}
+
+function asStringArray(value: unknown): string[] | null {
+  if (!Array.isArray(value) || value.length === 0) {
+    return null
+  }
+  return value.every((item) => typeof item === 'string') ? (value as string[]) : null
+}
+
+/** managed block の範囲 [start, end] を返す。無ければ null。 */
+function managedBlockRange(lines: readonly string[]): [number, number] | null {
+  const start = lines.indexOf(CODEX_BLOCK_START)
+  const end = lines.indexOf(CODEX_BLOCK_END)
+  return start === -1 || end === -1 || end < start ? null : [start, end]
+}
+
+function decodePreviousRaw(lines: readonly string[]): string | null {
+  const line = lines.find((value) => value.startsWith(PREVIOUS_NOTIFY_PREFIX))
+  if (line === undefined) {
+    return null
+  }
+  try {
+    return Buffer.from(line.slice(PREVIOUS_NOTIFY_PREFIX.length), 'base64').toString('utf8')
+  } catch {
+    return null
+  }
+}
+
+/**
+ * top-level `notify = ...` の raw 行範囲を返す (配列が複数行に跨る場合も含む)。
+ * managed block 内の行は対象外。
+ */
+function findNotifyAssignment(lines: readonly string[]): [number, number] | null {
+  const managed = managedBlockRange(lines)
+  for (let index = 0; index < lines.length; index += 1) {
+    if (managed !== null && index >= managed[0] && index <= managed[1]) {
+      continue
+    }
+    const line = lines[index] ?? ''
+    if (!/^\s*notify\s*=/.test(line)) {
+      continue
+    }
+    let depth = 0
+    for (let end = index; end < lines.length; end += 1) {
+      const text = lines[end] ?? ''
+      for (const char of text) {
+        if (char === '[') {
+          depth += 1
+        } else if (char === ']') {
+          depth -= 1
+        }
+      }
+      if (depth <= 0) {
+        return [index, end]
+      }
+    }
+    return [index, lines.length - 1]
+  }
+  return null
+}
+
+export function inspectCodexConfig(text: string, expectedArgv: readonly string[]): CodexInspection {
   let parsed: Record<string, unknown>
   try {
     parsed = parseToml(text) as Record<string, unknown>
   } catch {
-    return 'invalid'
+    return { state: 'invalid', chainArgv: null, previousRaw: null }
   }
+  const lines = text.split('\n')
   const notify = parsed.notify
-  const hasManagedBlock = text.includes(CODEX_BLOCK_START) && text.includes(CODEX_BLOCK_END)
+  const managed = managedBlockRange(lines) !== null
+
   if (notify === undefined) {
-    return 'absent'
+    return { state: 'absent', chainArgv: null, previousRaw: null }
   }
-  if (!hasManagedBlock) {
-    return 'conflict'
+  if (!managed) {
+    // 既存 notify は削除せず chain する (DESIGN v2.2 D006)。
+    const argv = asStringArray(notify)
+    return argv === null
+      ? { state: 'conflict', chainArgv: null, previousRaw: null }
+      : { state: 'chainable', chainArgv: argv, previousRaw: null }
   }
-  return sameStrings(notify, expectedArgv) ? 'managed' : 'stale'
+
+  const previousRaw = decodePreviousRaw(lines)
+  const chainArgv = readChainArgv(asStringArray(notify) ?? [])
+  const expected = withChain(expectedArgv, chainArgv)
+  return {
+    state: sameStrings(notify, expected) ? 'managed' : 'stale',
+    chainArgv,
+    previousRaw,
+  }
 }
 
-function managedCodexBlock(argv: readonly string[]): string {
+/** managed argv から `--chain <json>` を取り出す。 */
+function readChainArgv(argv: readonly string[]): string[] | null {
+  const index = argv.indexOf('--chain')
+  if (index === -1) {
+    return null
+  }
+  try {
+    return asStringArray(JSON.parse(argv[index + 1] ?? ''))
+  } catch {
+    return null
+  }
+}
+
+export function withChain(argv: readonly string[], chainArgv: readonly string[] | null): string[] {
+  return chainArgv === null || chainArgv.length === 0
+    ? [...argv]
+    : [...argv, '--chain', JSON.stringify(chainArgv)]
+}
+
+function managedCodexBlock(argv: readonly string[], previousRaw: string | null): string {
   const rendered = argv.map((value) => JSON.stringify(value)).join(', ')
-  return `${CODEX_BLOCK_START}\nnotify = [${rendered}]\n${CODEX_BLOCK_END}\n`
+  const previousLine =
+    previousRaw === null
+      ? ''
+      : `${PREVIOUS_NOTIFY_PREFIX}${Buffer.from(previousRaw, 'utf8').toString('base64')}\n`
+  return `${CODEX_BLOCK_START}\n${previousLine}notify = [${rendered}]\n${CODEX_BLOCK_END}\n`
 }
 
 function removeManagedCodexBlock(text: string): string {
   const lines = text.split('\n')
-  const start = lines.indexOf(CODEX_BLOCK_START)
-  const end = lines.indexOf(CODEX_BLOCK_END)
-  if (start === -1 || end === -1 || end < start) {
+  const range = managedBlockRange(lines)
+  if (range === null) {
     return text
   }
-  lines.splice(start, end - start + 1)
+  lines.splice(range[0], range[1] - range[0] + 1)
   return lines.join('\n')
 }
 
@@ -148,42 +254,83 @@ function insertManagedCodexBlock(text: string, block: string): string {
   return lines.join('\n')
 }
 
+/** 既存 notify の raw 行を managed block へ置き換える。位置は元の行のまま。 */
+function replaceNotifyAssignment(
+  text: string,
+  block: string,
+): { next: string; raw: string } | null {
+  const lines = text.split('\n')
+  const range = findNotifyAssignment(lines)
+  if (range === null) {
+    return null
+  }
+  const raw = lines.slice(range[0], range[1] + 1).join('\n')
+  lines.splice(range[0], range[1] - range[0] + 1, ...block.trimEnd().split('\n'))
+  return { next: lines.join('\n'), raw }
+}
+
 export function applyCodexNotify(
   integration: ResolvedIntegration,
   mode: 'install' | 'uninstall',
 ): AgentSetupOutcome {
-  const expected = codexNotifyArgv(integration.nodePath, integration.cliPath)
+  const base = codexNotifyArgv(integration.nodePath, integration.cliPath)
   const text = readTextOrEmpty(integration.codexConfigPath)
-  const state = inspectCodexConfig(text, expected)
+  const inspection = inspectCodexConfig(text, base)
 
-  if (state === 'invalid') {
+  if (inspection.state === 'invalid') {
     return { agent: 'codex', ok: false, code: 'INVALID_AGENT_CONFIG' }
   }
-  if (state === 'conflict') {
-    // 既存 notify は上書きも chain もしない (DESIGN D006)。file は 1 byte も変えない。
+  if (inspection.state === 'conflict') {
+    // string 配列でない notify は安全に chain できないので触らない。
     return mode === 'uninstall'
       ? { agent: 'codex', ok: true, state: 'unchanged' }
       : { agent: 'codex', ok: false, code: 'CODEX_NOTIFY_CONFLICT' }
   }
 
   if (mode === 'uninstall') {
-    if (state === 'absent') {
+    if (inspection.state === 'absent' || inspection.state === 'chainable') {
       return { agent: 'codex', ok: true, state: 'unchanged' }
     }
-    writeText(integration.codexConfigPath, removeManagedCodexBlock(text))
+    // 退避してあった元の raw 行をそのまま書き戻す。
+    const removed = removeManagedCodexBlock(text)
+    const restored =
+      inspection.previousRaw === null
+        ? removed
+        : insertManagedCodexBlock(removed, `${inspection.previousRaw}\n`)
+    writeText(integration.codexConfigPath, restored)
     return { agent: 'codex', ok: true, state: 'removed' }
   }
 
-  if (state === 'managed') {
+  if (inspection.state === 'managed') {
     return { agent: 'codex', ok: true, state: 'unchanged' }
   }
-  const block = managedCodexBlock(expected)
+
+  if (inspection.state === 'chainable') {
+    const block = managedCodexBlock(withChain(base, inspection.chainArgv), null)
+    const replaced = replaceNotifyAssignment(text, block)
+    if (replaced === null) {
+      return { agent: 'codex', ok: false, code: 'INVALID_AGENT_CONFIG' }
+    }
+    // raw 行を退避してから block を確定させる (復元用)。
+    const withPrevious = replaceNotifyAssignment(
+      text,
+      managedCodexBlock(withChain(base, inspection.chainArgv), replaced.raw),
+    )
+    if (withPrevious === null) {
+      return { agent: 'codex', ok: false, code: 'INVALID_AGENT_CONFIG' }
+    }
+    writeText(integration.codexConfigPath, withPrevious.next)
+    return { agent: 'codex', ok: true, state: 'chained' }
+  }
+
+  // absent / stale: chain 情報と退避行は保持したまま tracker block だけ作り直す。
+  const block = managedCodexBlock(withChain(base, inspection.chainArgv), inspection.previousRaw)
   const next =
-    state === 'stale'
+    inspection.state === 'stale'
       ? insertManagedCodexBlock(removeManagedCodexBlock(text), block)
       : insertManagedCodexBlock(text, block)
   writeText(integration.codexConfigPath, next)
-  return { agent: 'codex', ok: true, state: state === 'stale' ? 'updated' : 'installed' }
+  return { agent: 'codex', ok: true, state: inspection.state === 'stale' ? 'updated' : 'installed' }
 }
 
 // --- Claude Code --------------------------------------------------------
@@ -316,6 +463,8 @@ export interface AgentIntegrationStatus {
 const READINESS: Record<string, AgentReadiness> = {
   managed: 'ready',
   absent: 'not_installed',
+  // 既存 notify があるだけの状態は chain 待ちなので「未導入」と同じ扱いにする。
+  chainable: 'not_installed',
   stale: 'stale',
   conflict: 'conflict',
   invalid: 'invalid_config',
@@ -330,7 +479,7 @@ export function inspectAgentIntegration(
   const codex = inspectCodexConfig(
     readTextOrEmpty(integration.codexConfigPath),
     codexNotifyArgv(integration.nodePath, integration.cliPath),
-  )
+  ).state
   const claude = inspectClaudeSettings(
     readTextOrEmpty(integration.claudeSettingsPath),
     integration.nodePath,

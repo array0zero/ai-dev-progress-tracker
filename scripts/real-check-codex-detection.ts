@@ -7,6 +7,8 @@
  * 隔離条件 (AGENTS.md):
  * - project / TRACKER_DATA_DIR は OS temp のみ。終了時に temp だけ削除する。
  * - user `~/.codex/config.toml` は読むだけ。notify は invocation-level `-c notify=[...]` で渡す。
+ * - DESIGN v2.2 D006 の chain も同じ invocation-level notify で確認する (既存 notify を模した
+ *   marker script を `--chain` へ渡し、tracker 検知と chain 起動の両方が起きることを見る)。
  * - 登録確認 (server 起動 / browser open) は TRACKER_AGENT_EVENT_PROMPT=off で抑止する。
  * - このリポジトリの working tree / DB は変更しない。
  */
@@ -27,6 +29,7 @@ const EXEC_TIMEOUT_MS = 180_000
 const CANDIDATE_POLL_TIMEOUT_MS = 15_000
 const CANDIDATE_POLL_INTERVAL_MS = 250
 const PROMPT = 'Reply with exactly OK. Do not create, modify or delete any files.'
+const CHAIN_POLL_TIMEOUT_MS = 15_000
 
 function sha256OfFile(path: string): string | null {
   if (!existsSync(path)) {
@@ -79,6 +82,13 @@ async function main(): Promise<number> {
   const dataDir = mkdtempSync(join(tmpdir(), 'adpt-real-codex-data-'))
   const dbPath = loadConfig({ TRACKER_DATA_DIR: dataDir }).dbPath
 
+  // 既存 notify を模した chain 対象。呼ばれたら marker file を書いて非 0 で終わる。
+  const chainMarker = join(dataDir, 'chained-notify.txt')
+  const chainArgv = [
+    process.execPath,
+    '-e',
+    `require('node:fs').writeFileSync(${JSON.stringify(chainMarker)}, 'called'); process.exit(1)`,
+  ]
   const notify = JSON.stringify([
     process.execPath,
     cliPath,
@@ -87,6 +97,8 @@ async function main(): Promise<number> {
     'codex',
     '--input',
     'argv',
+    '--chain',
+    JSON.stringify(chainArgv),
   ])
 
   const report: Record<string, unknown> = {
@@ -149,6 +161,19 @@ async function main(): Promise<number> {
     }
     report.candidateAgent = candidates[0]?.agent
     report.candidateStatus = candidates[0]?.status
+
+    // chain 対象は detached なので少し待つ。非 0 終了でも検知は成立している。
+    const chainDeadline = Date.now() + CHAIN_POLL_TIMEOUT_MS
+    while (!existsSync(chainMarker) && Date.now() < chainDeadline) {
+      await sleep(CANDIDATE_POLL_INTERVAL_MS)
+    }
+    report.chainedNotifyCalled = existsSync(chainMarker)
+    if (report.chainedNotifyCalled !== true) {
+      report.result = 'FAIL: the chained notify was not started'
+      process.stdout.write(`${JSON.stringify(report, null, 2)}
+`)
+      return 1
+    }
 
     // ゼロ件・空入力: 対象外 event と空 payload では candidate が増えない
     const config = loadConfig({ TRACKER_DATA_DIR: dataDir, TRACKER_PORT: '4319' })
