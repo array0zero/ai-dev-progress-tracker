@@ -26,7 +26,8 @@
     "eval:generation": "tsx scripts/eval-generation.ts",
     "eval:recovery": "tsx scripts/eval-recovery.ts",
     "verify:secrets": "tsx scripts/verify-no-secrets.ts",
-    "real:codex-detection": "tsx scripts/real-check-codex-detection.ts"
+    "real:codex-detection": "tsx scripts/real-check-codex-detection.ts",
+    "real:claude-detection": "tsx scripts/real-check-claude-detection.ts"
   },
   "dependencies": {
     "@fastify/static": "10.1.3",
