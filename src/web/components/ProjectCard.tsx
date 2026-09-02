@@ -1,10 +1,10 @@
-import type { ProjectSummary } from '../../shared/api.js'
+import type { ProjectSummaryV2 } from '../../shared/api.js'
 
 const NEEDS_INPUT_LABEL = '要補完'
 const NO_SNAPSHOT_LABEL = '進捗生成中'
 
 export interface ProjectCardProps {
-  project: ProjectSummary
+  project: ProjectSummaryV2
 }
 
 function shortSha(sha: string | null): string {

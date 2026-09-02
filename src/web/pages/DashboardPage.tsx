@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { ProjectSummary, SystemStatus } from '../../shared/api.js'
+import type { ProjectSummaryV2, SystemStatus } from '../../shared/api.js'
 import type { RegistrationCandidate } from '../../shared/domain.js'
 import { ApiError, fetchCandidates, fetchProjects, reopenCandidate } from '../api/client.js'
-import { ProjectCard } from '../components/ProjectCard.js'
+import { type DashboardStateFilter, DashboardToolbar } from '../components/DashboardToolbar.js'
+import { DenseProjectRow } from '../components/DenseProjectRow.js'
 import {
   RegisterProjectForm,
   type RegisterProjectPrefill,
@@ -32,10 +33,39 @@ function candidateIdFromUrl(): string | null {
   return new URLSearchParams(window.location.search).get('candidate')
 }
 
+function matchesFilters(
+  project: ProjectSummaryV2,
+  filters: readonly DashboardStateFilter[],
+): boolean {
+  if (filters.length === 0) {
+    return true
+  }
+  // 状態 filter は OR (DESIGN D015)。
+  return filters.some((filter) =>
+    filter === 'has_next_action'
+      ? project.hasNextAction
+      : filter === 'needs_review'
+        ? project.reviewRequired
+        : project.unreflected,
+  )
+}
+
+/** DESIGN: default sort は lastUpdatedAt DESC、同値は name ASC。 */
+function sortProjects(projects: readonly ProjectSummaryV2[]): ProjectSummaryV2[] {
+  return [...projects].sort((a, b) => {
+    if (a.lastUpdatedAt !== b.lastUpdatedAt) {
+      return a.lastUpdatedAt < b.lastUpdatedAt ? 1 : -1
+    }
+    return a.name.localeCompare(b.name)
+  })
+}
+
 export function DashboardPage() {
-  const [projects, setProjects] = useState<ProjectSummary[]>([])
+  const [projects, setProjects] = useState<ProjectSummaryV2[]>([])
   const [candidates, setCandidates] = useState<RegistrationCandidate[]>([])
   const [prefill, setPrefill] = useState<RegisterProjectPrefill | null>(null)
+  const [filters, setFilters] = useState<DashboardStateFilter[]>([])
+  const [query, setQuery] = useState('')
   const promptCandidateId = candidateIdFromUrl()
   const [banner, setBanner] = useState<BannerState | null>(null)
   const [system, setSystem] = useState<SystemStatus | null>(null)
@@ -43,7 +73,7 @@ export function DashboardPage() {
 
   const reload = useCallback(async () => {
     try {
-      setProjects(await fetchProjects())
+      setProjects((await fetchProjects()) as ProjectSummaryV2[])
       setBanner(null)
     } catch (error) {
       if (error instanceof ApiError) {
@@ -65,6 +95,8 @@ export function DashboardPage() {
   useEffect(() => {
     void reload()
   }, [reload])
+
+  const visible = sortProjects(projects.filter((project) => matchesFilters(project, filters)))
 
   return (
     <main className="app">
@@ -106,17 +138,38 @@ export function DashboardPage() {
         }
       />
 
-      <RegisterProjectForm onRegistered={reload} onError={setBanner} prefill={prefill} />
+      <DashboardToolbar
+        filters={filters}
+        onToggleFilter={(filter) =>
+          setFilters((current) =>
+            current.includes(filter)
+              ? current.filter((value) => value !== filter)
+              : [...current, filter],
+          )
+        }
+        query={query}
+        onQueryChange={setQuery}
+        visibleCount={visible.length}
+        totalCount={projects.length}
+      />
 
-      <section className="project-list">
+      <section className="project-list project-list--dense">
         {loading ? <p>読み込み中…</p> : null}
         {!loading && projects.length === 0 ? (
           <p className="project-list__empty">登録済みプロジェクトはありません。</p>
         ) : null}
-        {projects.map((project) => (
-          <ProjectCard key={project.id} project={project} />
+        {!loading && projects.length > 0 && visible.length === 0 ? (
+          <p className="project-list__empty">条件に一致するプロジェクトはありません。</p>
+        ) : null}
+        {visible.map((project) => (
+          <DenseProjectRow key={project.id} project={project} />
         ))}
       </section>
+
+      <details className="manual-register">
+        <summary>手動で登録</summary>
+        <RegisterProjectForm onRegistered={reload} onError={setBanner} prefill={prefill} />
+      </details>
     </main>
   )
 }

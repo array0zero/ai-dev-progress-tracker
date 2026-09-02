@@ -151,13 +151,17 @@ function seedRepo(slug: string): TempRepo {
   return repo
 }
 
-test('shows the app shell and the registration form', async ({ page }) => {
+test('shows the app shell and the collapsed manual registration form', async ({ page }) => {
   await page.goto('/')
   await expect(page.getByRole('heading', { name: 'AI Dev Progress Tracker' })).toBeVisible()
+  await expect(page.getByRole('region', { name: '表示条件' })).toBeVisible()
+  // 通常状態では手動登録は畳まれている (dense list の 1 画面要件のため)
+  await expect(page.getByLabel('プロジェクト名')).toBeHidden()
+  await page.getByText('手動で登録').click()
   await expect(page.getByLabel('プロジェクト名')).toBeVisible()
 })
 
-test('renders repository, short SHA and the three progress rows per project card', async ({
+test('renders name, current position, next action and last update on each dense row', async ({
   page,
   request,
 }) => {
@@ -182,10 +186,11 @@ test('renders repository, short SHA and the three progress rows per project card
     await expect(cardB).toBeVisible()
 
     await expect(cardA).toContainText('e2e/dash-a')
-    await expect(cardA.locator('.project-card__sha')).toHaveText(/^[0-9a-f]{8}$/)
-    for (const label of ['現在地', '完了事項', '次の作業']) {
-      await expect(cardA.getByText(label, { exact: true })).toBeVisible()
-    }
+    // 詳細へ遷移しなくても 名前 / 現在地 / 次の作業 / 最終更新 が行内にある
+    await expect(cardA.locator('.dense-row__name')).toHaveText('Dash A')
+    await expect(cardA.locator('.dense-row__current')).not.toBeEmpty()
+    await expect(cardA.locator('.dense-row__next')).toHaveCount(1)
+    await expect(cardA.locator('.dense-row__updated')).not.toBeEmpty()
 
     // 別 project の情報が混ざらない
     await expect(cardA).not.toContainText('e2e/dash-b')
@@ -216,17 +221,14 @@ test('reflects a completed snapshot, a partial one, and a failed generation on t
   await page.goto('/')
 
   const complete = page.getByRole('article', { name: 'T11 Complete' })
-  await expect(complete).toContainText('CURRENT_POSITION_TEXT')
-  await expect(complete).toContainText('DONE_ITEM')
-  await expect(complete).toContainText('generation: succeeded')
+  await expect(complete.locator('.dense-row__current')).toHaveText('CURRENT_POSITION_TEXT')
 
   const partial = page.getByRole('article', { name: 'T11 Partial' })
-  await expect(partial).toContainText('generation: partial')
-  await expect(partial.locator('.project-card__progress dd').first()).toHaveText('要補完')
+  await expect(partial.locator('.dense-row__current')).toHaveText('要補完')
 
+  // snapshot のない project は固定 fallback を出す
   const failed = page.getByRole('article', { name: 'T11 Failed' })
-  await expect(failed).toContainText('generation: failed')
-  await expect(failed).toContainText('進捗生成中')
+  await expect(failed.locator('.dense-row__current')).toHaveText('進捗生成待ち')
 })
 
 test('rejects a non-localhost Host header with 403', async ({ request }) => {
@@ -276,4 +278,208 @@ test('renders 100 projects with 20 snapshots each within 2 seconds', async ({ pa
 
   expect(apiMs).toBeLessThan(2000)
   expect(totalMs).toBeLessThan(2000)
+})
+
+interface DenseSeed {
+  name: string
+  lastUpdatedAt: string
+  withSnapshot?: boolean
+  nextActions?: string[]
+  reviewRequired?: boolean
+  localPath?: string
+  commitSha?: string
+}
+
+/** dense list 用に 8 件を直接 seed する (freshness は API 側で計算される)。 */
+function seedDenseProjects(seeds: readonly DenseSeed[]): void {
+  const db = openDatabase(DB_PATH)
+  try {
+    const run = db.transaction(() => {
+      for (const seed of seeds) {
+        const projectId = randomUUID()
+        const sha =
+          seed.commitSha ??
+          randomUUID().replace(/-/g, '') + randomUUID().replace(/-/g, '').slice(0, 8)
+        insertProject(
+          db,
+          {
+            id: projectId,
+            name: seed.name,
+            localPath: seed.localPath ?? `/dense/${projectId}`,
+            repoNodeId: `NODE_${projectId}`,
+            repoOwner: 'dense',
+            repoName: 'demo',
+            repoUrl: 'https://github.com/dense/demo',
+            defaultBranch: 'main',
+            status: 'active',
+            summary: `${seed.name} の概要`,
+            reviewRequired: seed.reviewRequired === true,
+          },
+          new Date(seed.lastUpdatedAt),
+        )
+        upsertCommit(db, {
+          projectId,
+          sha,
+          parentSha: null,
+          message: 'dense seed',
+          authoredAt: seed.lastUpdatedAt,
+          detectedAt: seed.lastUpdatedAt,
+        })
+        if (seed.withSnapshot === false) {
+          continue
+        }
+        const runId = randomUUID()
+        db.prepare(
+          `INSERT INTO generation_runs (id, dedupe_key, project_id, commit_sha, mode, trigger, status, detected_at)
+           VALUES (?, ?, ?, ?, 'generation', 'post_commit', 'queued', ?)`,
+        ).run(runId, `generation:${projectId}:${sha}`, projectId, sha, seed.lastUpdatedAt)
+        markRunTerminal(db, runId, 'succeeded')
+        const nextActions =
+          seed.nextActions === undefined || seed.nextActions.length === 0
+            ? { status: 'needs_input', items: [], evidenceIds: [] }
+            : {
+                status: 'confirmed',
+                items: seed.nextActions.map((text) => ({ text, evidenceIds: [] })),
+                evidenceIds: [],
+              }
+        insertSnapshot(
+          db,
+          {
+            id: randomUUID(),
+            generationRunId: runId,
+            projectId,
+            commitSha: sha,
+            recoveryStatus: 'complete',
+            currentPosition: {
+              status: 'confirmed',
+              text: `${seed.name} の現在地`,
+              evidenceIds: [],
+            },
+            completedItems: { status: 'needs_input', items: [], evidenceIds: [] },
+            nextActions,
+            decisions: { status: 'needs_input', items: [], evidenceIds: [] },
+          },
+          new Date(seed.lastUpdatedAt),
+        )
+      }
+    })
+    run()
+  } finally {
+    db.close()
+  }
+}
+
+function clearProjects(): void {
+  const db = openDatabase(DB_PATH)
+  try {
+    db.exec('DELETE FROM registration_candidates; DELETE FROM projects;')
+  } finally {
+    db.close()
+  }
+}
+
+test('fits eight dense rows into the 2005x1271 acceptance viewport without scrolling', async ({
+  page,
+}) => {
+  clearProjects()
+  seedDenseProjects(
+    Array.from({ length: 8 }, (_, index) => ({
+      name: `Dense ${String(index).padStart(2, '0')}`,
+      lastUpdatedAt: `2026-09-0${index + 1}T00:00:00.000Z`,
+      nextActions: [`次の作業 ${index}`],
+    })),
+  )
+
+  await page.setViewportSize({ width: 2005, height: 1271 })
+  await page.goto('/')
+  const rows = page.locator('.dense-row')
+  await expect(rows).toHaveCount(8)
+
+  const overflow = await page.evaluate(() => {
+    const element = document.scrollingElement as HTMLElement
+    return element.scrollHeight - element.clientHeight
+  })
+  expect(overflow).toBeLessThanOrEqual(0)
+
+  // 8 行すべてが viewport 内に収まっている
+  for (let index = 0; index < 8; index += 1) {
+    const box = await rows.nth(index).boundingBox()
+    expect(box).not.toBeNull()
+    expect((box?.y ?? 0) + (box?.height ?? 0)).toBeLessThanOrEqual(1271)
+  }
+
+  // default sort は lastUpdatedAt DESC
+  const names = await page.locator('.dense-row__name').allTextContents()
+  expect(names[0]).toBe('Dense 07')
+  expect(names[7]).toBe('Dense 00')
+})
+
+test('filters by each state and by several states at once', async ({ page }) => {
+  clearProjects()
+  seedDenseProjects([
+    { name: 'F Next', lastUpdatedAt: '2026-09-01T00:00:00.000Z', nextActions: ['続きを実装'] },
+    { name: 'F Review', lastUpdatedAt: '2026-09-02T00:00:00.000Z', reviewRequired: true },
+    { name: 'F Unreflected', lastUpdatedAt: '2026-09-03T00:00:00.000Z', withSnapshot: false },
+    { name: 'F Plain', lastUpdatedAt: '2026-09-04T00:00:00.000Z' },
+  ])
+
+  await page.goto('/')
+  await expect(page.locator('.dense-row')).toHaveCount(4)
+
+  await page.getByLabel('次の作業あり').check()
+  await expect(page.locator('.dense-row__name')).toHaveText(['F Next'])
+
+  await page.getByLabel('要確認').check()
+  await expect(page.locator('.dense-row__name')).toHaveText(['F Review', 'F Next'])
+
+  await page.getByLabel('次の作業あり').uncheck()
+  await expect(page.locator('.dense-row__name')).toHaveText(['F Review'])
+
+  await page.getByLabel('要確認').uncheck()
+  await page.getByLabel('未反映').check()
+  await expect(page.locator('.dense-row__name')).toHaveText(['F Unreflected'])
+})
+
+test('shows an empty state for zero projects and for a filter with no matches', async ({
+  page,
+}) => {
+  clearProjects()
+  await page.goto('/')
+  await expect(page.getByText('登録済みプロジェクトはありません。')).toBeVisible()
+
+  seedDenseProjects([{ name: 'Only One', lastUpdatedAt: '2026-09-01T00:00:00.000Z' }])
+  await page.reload()
+  await page.getByLabel('次の作業あり').check()
+  await expect(page.getByText('条件に一致するプロジェクトはありません。')).toBeVisible()
+  await expect(page.locator('.dense-row')).toHaveCount(0)
+})
+
+test('shows the unreflected badge that matches the real Git HEAD from the API', async ({
+  page,
+  request,
+}) => {
+  clearProjects()
+  const repo = seedRepo('e2e/fresh')
+  try {
+    const created = await request.post('/api/projects', {
+      data: { name: 'Fresh Row', localPath: repo.root, repository: 'e2e/fresh' },
+    })
+    expect(created.status()).toBe(201)
+
+    await page.goto('/')
+    const row = page.getByRole('article', { name: 'Fresh Row' })
+    await expect(row.getByText('未反映')).toBeVisible()
+
+    const api = await request.get('/api/projects')
+    const projects = (await api.json()) as Array<{
+      name: string
+      latestCommitSha: string | null
+      unreflected: boolean
+    }>
+    const summary = projects.find((project) => project.name === 'Fresh Row')
+    expect(summary?.unreflected).toBe(true)
+    expect(summary?.latestCommitSha).toBe(repo.git('rev-parse', 'HEAD'))
+  } finally {
+    repo.cleanup()
+  }
 })
