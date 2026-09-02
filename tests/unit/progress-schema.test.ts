@@ -55,20 +55,52 @@ describe('validateProgressOutput', () => {
     }
   })
 
-  it('rejects a needs_input text field whose text is not the 要補完 sentinel', () => {
+  it('canonicalizes a needs_input text field that carries stray text or evidence', () => {
     const output = validOutput()
-    output.currentPosition = { status: 'needs_input', text: 'なにか', evidenceIds: [] }
-    expect(validateProgressOutput(output, EVIDENCE).ok).toBe(false)
+    output.currentPosition = {
+      status: 'needs_input',
+      text: '現在位置を示す根拠がありません',
+      evidenceIds: ['ev-1'],
+    }
+    const result = validateProgressOutput(output, EVIDENCE)
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.progress.currentPosition).toEqual({
+        status: 'needs_input',
+        text: '要補完',
+        evidenceIds: [],
+      })
+      expect(result.confirmedCount).toBe(3)
+    }
   })
 
-  it('rejects a needs_input list field that still carries items', () => {
+  it('canonicalizes a needs_input list/decision field that still carries items or evidence', () => {
     const output = validOutput()
     output.completedItems = {
       status: 'needs_input',
       items: [{ text: 'x', evidenceIds: [] }],
-      evidenceIds: [],
+      evidenceIds: ['ev-1'],
     }
-    expect(validateProgressOutput(output, EVIDENCE).ok).toBe(false)
+    output.importantDecisions = {
+      status: 'needs_input',
+      items: [{ decision: 'd', rationale: 'r', evidenceIds: ['ev-3'] }],
+      evidenceIds: ['ev-3'],
+    }
+    const result = validateProgressOutput(output, EVIDENCE)
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.progress.completedItems).toEqual({
+        status: 'needs_input',
+        items: [],
+        evidenceIds: [],
+      })
+      expect(result.progress.importantDecisions).toEqual({
+        status: 'needs_input',
+        items: [],
+        evidenceIds: [],
+      })
+      expect(result.confirmedCount).toBe(2)
+    }
   })
 
   it('allows importantDecisions confirmed with items=[] when field-level evidence is present', () => {
@@ -81,6 +113,27 @@ describe('validateProgressOutput', () => {
     const output = validOutput()
     output.importantDecisions = { status: 'confirmed', items: [], evidenceIds: [] }
     expect(validateProgressOutput(output, EVIDENCE).ok).toBe(false)
+  })
+
+  it('drops malformed importantDecisions items but keeps the field when evidence is present', () => {
+    const output = validOutput()
+    output.importantDecisions = {
+      status: 'confirmed',
+      items: [
+        { decision: 'SQLiteを採用', rationale: '単一ユーザーMVP', evidenceIds: ['ev-3'] },
+        { decision: '', rationale: '', evidenceIds: [] },
+        { decision: 'd', rationale: 'r', evidenceIds: [] },
+      ],
+      evidenceIds: ['ev-3'],
+    }
+    const result = validateProgressOutput(output, EVIDENCE)
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.progress.importantDecisions.items).toEqual([
+        { decision: 'SQLiteを採用', rationale: '単一ユーザーMVP', evidenceIds: ['ev-3'] },
+      ])
+      expect(result.confirmedCount).toBe(4)
+    }
   })
 
   it('rejects a confirmed list field with an empty items array', () => {

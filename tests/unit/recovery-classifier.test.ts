@@ -120,9 +120,17 @@ describe('recovery classification through validateProgressOutput', () => {
     }
   })
 
-  it('does not accept a needs_input field carrying a concrete value', () => {
-    const bad = output({})
-    bad.currentPosition = { status: 'needs_input', text: '確定値', evidenceIds: [] }
-    expect(validateProgressOutput(bad, EVIDENCE).ok).toBe(false)
+  it('strips a concrete value from a needs_input field rather than storing it', () => {
+    const messy = output({})
+    messy.currentPosition = { status: 'needs_input', text: '確定値', evidenceIds: [] }
+    const result = validateProgressOutput(messy, EVIDENCE)
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.progress.currentPosition).toEqual({
+        status: 'needs_input',
+        text: '要補完',
+        evidenceIds: [],
+      })
+    }
   })
 })

@@ -1,9 +1,17 @@
 # DESIGN.md — 設計書
 
 project_id: ai-dev-progress-tracker  
-version: 1.6  
-date: 2026-09-01  
-source: PLAN.md v1.2 + 実機検証結果（2026-09-01）+ Windows実機不具合修正（2026-09-01）+ 空backup repo初回同期修正（2026-09-01）+ backup改行変換によるchecksum不一致修正（2026-09-01）+ generation評価harnessの隔離と期待値是正（2026-09-01）
+version: 1.7  
+date: 2026-09-02  
+source: PLAN.md v1.2 + 実機検証結果（2026-09-01）+ Windows実機不具合修正（2026-09-01）+ 空backup repo初回同期修正（2026-09-01）+ backup改行変換によるchecksum不一致修正（2026-09-01）+ generation評価harnessの隔離と期待値是正（2026-09-01）+ recovery出力受理の堅牢化（2026-09-02）
+
+## v1.7変更点
+
+- 根拠が乏しい recovery ケースで Codex 出力が `CODEX_OUTPUT_INVALID` になり snapshot が全く残らない問題を修正。原因は prompt が `needs_input` の固定形式を指定しておらず、モデルが needs_input に説明文や evidenceId を付けてしまうこと。
+- AI prompt固定契約へ `needs_input` の固定形式、「タイトルのみ / 空 / 曖昧 / routine変更は根拠不足」「有効なJSONを必ず返す（拒否・自由文禁止）」を明記。
+- `validateProgressOutput` を寛容側へ: `needs_input` field を固定形式へ正規化、`importantDecisions` confirmed の形式不備 decision item を除去（field-level evidence があれば維持）。run 全体を失効させない。
+- `eval-recovery.ts` の pass 条件から `mustContain` / `mustNotContain` を除外（`eval-generation.ts` と統一）。`recovery-cases.json` の expected を `status` + `requiredEvidenceExternalKeys` のみへ簡素化。
+- 設計判断ログに D025 を追加。
 
 ## v1.6変更点
 
@@ -1172,11 +1180,24 @@ codex
 あなたは開発進捗抽出器です。
 入力のevidence以外の知識・推測を使わないでください。
 4フィールド currentPosition / completedItems / nextActions / importantDecisions を返してください。
-根拠が不足するfieldは status=needs_input とし、指定された要補完形式を使ってください。
-evidenceIdsには入力bundleに存在するIDだけを使用してください。
-判断事項にはdecisionとrationaleを含めてください。
-JSON Schemaに完全一致する出力だけを返してください。
+
+confirmed の条件:
+- evidence本文に明記された事実だけを confirmed にできます。
+- Issue/PRのタイトルだけ、本文が空・曖昧・一語、依存更新やlockfileやフォーマット等のroutine変更しか無い場合は、
+  その事実からプロジェクトの進捗は判断できません。confirmed にせず needs_input にしてください。
+- 推測・要約・言い換えによる穴埋めは禁止です。
+
+needs_input の固定形式 (説明文やevidenceIdを入れない):
+- currentPosition: {"status":"needs_input","text":"要補完","evidenceIds":[]}
+- completedItems / nextActions / importantDecisions: {"status":"needs_input","items":[],"evidenceIds":[]}
+
+evidence が全く役に立たない場合は、4フィールドすべてを上記 needs_input 形式で返してください。
+どんな入力でも必ずJSON Schemaに完全一致する有効なJSONを返し、拒否や自由文で応答しないでください。
+confirmed の field と item には、入力bundleに存在する evidenceId を1件以上付けてください。
+判断事項(importantDecisions)の confirmed item には decision と rationale を含めてください。
 ```
+
+出力受理は寛容側に倒す。`needs_input` の field はモデルが付けた説明文 / evidenceId / item を落として上記固定形式へ正規化する（推測の除去。推測の確定保存ではない）。`importantDecisions` の `confirmed` で `decision` / `rationale` が空、または item に evidence が無い decision item は捨て、field-level evidence が残っていれば `items=[]` の `confirmed` として受理する。これらを `CODEX_OUTPUT_INVALID` で run 全体を失効させない。
 
 ### バックアップ先
 
@@ -1322,8 +1343,9 @@ CIでは実GitHub/Codexを呼ばない。
 
 `tests/fixtures/recovery-cases.json`:
 - 復元可能10ケース。
-- 追加で根拠不足ケース4件。
-- 各ケースに`id`, `evidence[]`, `expectedRecoveryStatus`, fieldごとの`status`, `mustContain[]`, `mustNotContain[]`, `requiredEvidenceExternalKeys[]`を持つ。
+- 追加で根拠不足ケース4件（`rec-11`..`rec-14`。4フィールドすべて`needs_input`、`expectedRecoveryStatus=unrecoverable`）。
+- 各ケースに`id`, `evidence[{kind,externalKey,title,body}]`, `expectedRecoveryStatus`, fieldごとの`expected`を持つ。`expected`は`status`と（`confirmed`時の）`requiredEvidenceExternalKeys[]`のみ（`mustContain` / `mustNotContain`は任意の補助チェック）。
+- モデルの`importantDecisions`確定はケースにより揺れる（根拠にdecision文はあるがrationaleが暗黙の場合など）。1実行あたり1ケース程度この揺れでfailしうるが、PLANの合格基準（復元可能10件中8件以上）は満たす。
 
 評価時の文字列比較はUnicode NFKC正規化後に英字だけlowercase化し、substring一致で判定する（`mustContain` / `mustNotContain`使用時のみ）。1ケースは以下を全て満たした時だけpass。
 
@@ -1501,6 +1523,7 @@ DB:
 | D020 | better-sqlite3の型定義 | 型定義専用パッケージ`@types/better-sqlite3@9.6.0`を`devDependencies`へ追加 | `better-sqlite3`は型を同梱せず、`strict`前提のtypecheckに型が必須。ランタイム挙動は不変 | 手書きambient宣言（却下: 保守コスト増・不正確）／`any`許容（却下: 規約でany禁止） |
 | D021 | Windowsでの外部CLI起動と検査失敗の切り分け | process runnerが`PATH`+`PATHEXT`で実体を解決し、`.cmd`/`.bat` shimは`%ComSpec% /d /s /c`経由で（shellなしで）起動する。Codex検査は「実行不能」を`CODEX_VERSION_CHECK_FAILED`/`CODEX_AUTH_CHECK_FAILED`、「下限未満」を`CODEX_VERSION_UNSUPPORTED`として別コードで返す | Windowsではnpm製CLI（`codex`）が`.cmd` shimで、`spawn(shell:false)`が直接起動できずCVE-2024-27980で拒否される。実行不能と下限未満を同一コードにすると実機での原因切り分けができない | `shell:true`（却下: DESIGNの`shell:false`固定に反する）／実行時にnpm globalの`codex.js`実体を推測（却下: npm版差で壊れやすい）／`cross-spawn`依存追加（却下: 追加npm package最小化方針。相当ロジックを内製） |
 | D022 | 空backup repoの初回同期 | commitのあるcloneのみ`git pull --ff-only`し、unborn HEAD（`gh repo create`直後の空repoをcloneした状態）ではpullをスキップして初回pushへ進む。pushは`git push -u origin main`、その前に`git symbolic-ref HEAD refs/heads/main`で固定branchへ寄せる | 空repoにはbranch参照が無く`pull --ff-only`が必ず失敗して初回backupが成立しない。空repo判定を`git rev-parse HEAD`の可否で行えば追加のGitHub API呼び出しも不要 | `gh repo create`時に初期commitを作る（却下: ensure処理にclone/commit/pushが増え、visibility検証やmarker検証と手順が交錯する）／`--ff-only`を外して常にpull（却下: 誤ったfast-forwardでないmergeを許容しかねない） |
+| D025 | recovery出力受理の寛容化 | promptに`needs_input`固定形式と「タイトルのみ/routine変更は根拠不足」「有効JSONを必ず返す」を明記。`validateProgressOutput`は`needs_input` fieldを固定形式へ正規化し、`importantDecisions` confirmedの形式不備decision itemを除去する。run全体を`CODEX_OUTPUT_INVALID`で落とさない | 根拠が乏しいケースでモデルが`needs_input`に説明文やevidenceIdを付ける／confirmed decision itemの`rationale`が空になる程度のブレで、正しく「復元不能」を返しているのに出力全体が失効しsnapshotが残らない。`needs_input` fieldの中身は定義上無意味なので、モデルの付けた推測を落とす正規化は情報を失わずD014に整合する | schemaに`if/then`で`needs_input`形式を強制（却下: OpenAI structured outputが`if/then`/`allOf`に制約があり実効性が乏しい）／厳格なまま維持しリトライで対処（却下: レイテンシと従量コストが増え、根本原因が残る）／`needs_input`時にfieldをoptionalにする（却下: schemaが緩みすぎ、confirmed経路の検証も甘くなる） |
 | D024 | generation評価harnessの隔離と期待値基準 | 評価用commitは対象repoのHEADから切り出したdetached `git worktree`内でのみ行い、終了時に破棄する。fixtureの`expected`は「根拠のあるfieldは`confirmed` + evidence、根拠の乏しい`nextActions`は`needs_input`」を実測に合わせて固定し、pass条件から自然言語のsubstring一致（`mustContain`）を外す | harnessが対象repoのbranch / working tree / indexへ直接commitすると、評価用repoを誤って指定した場合に実ソースを破壊する（実際に発生）。また旧fixtureは`importantDecisions`に`needs_input`を期待していたが実際は根拠付きで`confirmed`になり、substring一致は同義の別表現で不合格になるため自然言語生成の評価として機能しない | 対象repoで直接commitしstash/resetで戻す（却下: 中断時に復旧しきれず作業を失う恐れ／indexやstashの状態に依存）／別repoをcloneして評価（却下: private repoのissue/PR取得が壊れる、cloneコスト）／`mustContain`を維持し表現ゆれを許容語で吸収（却下: 語彙リストの保守が生成品質と無関係に膨らむ） |
 | D023 | backupファイルの改行変換防止 | backup repo rootに`.gitattributes`（`* -text\n`）を置き、`manifest.json` / `data/backup-v1.json`をbinary扱い（改行変換なし）でcheckoutさせる。既存repoは次回backupで`.gitattributes`を追加commitして置き換え、clone再利用時は`git pull`後`git checkout HEAD -- .`で再展開する | Windowsの`core.autocrlf`がcheckout時にLF→CRLF変換し、生成時`sha256`（LF基準）とclone後byte列が不一致になり`restore`が`BACKUP_CHECKSUM_MISMATCH`で失敗する。ファイル単位の属性指定が最小の是正で、diff表示も不要なbackup用途に適合する | restore側で改行を正規化してからhash（却下: 正当なCRLFを含む値を静かに書き換え、checksumの意味が失われる）／`sha256`計算前にファイルを`\r\n`→`\n`変換（却下: 同上、かつ生成側と検証側でロジックが分岐する）／backupを常にbase64等でencode保存（却下: 人間可読なdeterministic JSONというD012の前提を崩す） |
 

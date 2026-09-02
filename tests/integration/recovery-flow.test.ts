@@ -192,6 +192,45 @@ describe('recovery flow', () => {
     expect(getLatestSnapshotByProject(ctx.db, projectId)?.recoveryStatus).toBe('unrecoverable')
   })
 
+  it('canonicalizes a non-canonical needs_input output instead of failing the run', async () => {
+    const projectId = await register(ctx.db)
+    const run = getRunById(ctx.db, listRunsByProject(ctx.db, projectId)[0]?.id ?? '')
+    if (run === null) {
+      throw new Error('run missing')
+    }
+    // モデルが needs_input に説明文や item を付けてきても、run を failed にせず
+    // 固定形式へ正規化して unrecoverable の snapshot を残す。
+    useFakeCodex({
+      output: {
+        schemaVersion: 1,
+        currentPosition: {
+          status: 'needs_input',
+          text: '現在位置の根拠がありません',
+          evidenceIds: [],
+        },
+        completedItems: {
+          status: 'needs_input',
+          items: [{ text: '不明', evidenceIds: [] }],
+          evidenceIds: [],
+        },
+        nextActions: needsInputList,
+        importantDecisions: needsInputList,
+      },
+    })
+
+    await runGeneration(ctx.db, run)
+
+    expect(getRunById(ctx.db, run.id)?.status).toBe('unrecoverable')
+    const snapshot = getLatestSnapshotByProject(ctx.db, projectId)
+    expect(snapshot?.recoveryStatus).toBe('unrecoverable')
+    expect(snapshot?.currentPosition).toEqual({
+      status: 'needs_input',
+      text: '要補完',
+      evidenceIds: [],
+    })
+    expect(snapshot?.completedItems).toEqual({ status: 'needs_input', items: [], evidenceIds: [] })
+  })
+
   it('POST /api/projects/:id/recover queues a run and 404s for an unknown project', async () => {
     const projectId = await register(ctx.db)
     // 起点の registration recovery を終端させ、active でなくする

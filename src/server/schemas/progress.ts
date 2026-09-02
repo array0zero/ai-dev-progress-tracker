@@ -106,6 +106,21 @@ export function validateProgressOutput(
   const output = parsed.data
   const referenced = new Set<string>()
 
+  // needs_input の field は「根拠が無い」という以外の情報を持たない。
+  // モデルが付けた説明文 / evidenceId / item を落として固定形式へ正規化する。
+  // これは推測の除去であり、推測の確定保存 (DESIGN D014) には当たらない。
+  if (output.currentPosition.status === 'needs_input') {
+    output.currentPosition = { status: 'needs_input', text: NEEDS_INPUT_TEXT, evidenceIds: [] }
+  }
+  for (const key of ['completedItems', 'nextActions'] as const) {
+    if (output[key].status === 'needs_input') {
+      output[key] = { status: 'needs_input', items: [], evidenceIds: [] }
+    }
+  }
+  if (output.importantDecisions.status === 'needs_input') {
+    output.importantDecisions = { status: 'needs_input', items: [], evidenceIds: [] }
+  }
+
   const cp = output.currentPosition
   if (cp.status === 'needs_input') {
     if (cp.text !== NEEDS_INPUT_TEXT || cp.evidenceIds.length !== 0) {
@@ -153,14 +168,13 @@ export function validateProgressOutput(
     if (dec.evidenceIds.length === 0) {
       return invalid('importantDecisions confirmed requires field-level evidence')
     }
+    // 形式不備の decision item は捨てる。field-level evidence があれば
+    // items=[] の confirmed は許容されるため (DESIGN)、出力全体は失効させない。
+    dec.items = dec.items.filter(
+      (item) =>
+        item.decision.trim() !== '' && item.rationale.trim() !== '' && item.evidenceIds.length > 0,
+    )
     for (const item of dec.items) {
-      if (
-        item.decision.trim() === '' ||
-        item.rationale.trim() === '' ||
-        item.evidenceIds.length === 0
-      ) {
-        return invalid('importantDecisions item form is invalid')
-      }
       for (const id of item.evidenceIds) {
         referenced.add(id)
       }

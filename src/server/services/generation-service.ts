@@ -311,10 +311,20 @@ export async function collectEvidenceBundle(
 const PROMPT_CONTRACT = `あなたは開発進捗抽出器です。
 入力のevidence以外の知識・推測を使わないでください。
 4フィールド currentPosition / completedItems / nextActions / importantDecisions を返してください。
-根拠が不足するfieldは status=needs_input とし、指定された要補完形式を使ってください。
-evidenceIdsには入力bundleに存在するIDだけを使用してください。
-判断事項にはdecisionとrationaleを含めてください。
-JSON Schemaに完全一致する出力だけを返してください。`
+
+confirmed の条件:
+- evidence本文に明記された事実だけを confirmed にできます。
+- Issue/PRのタイトルだけ、本文が空・曖昧・一語、依存更新やlockfileやフォーマット等のroutine変更しか無い場合は、その事実からプロジェクトの進捗は判断できません。confirmed にせず needs_input にしてください。
+- 推測・要約・言い換えによる穴埋めは禁止です。
+
+needs_input の固定形式 (説明文やevidenceIdを入れない):
+- currentPosition: {"status":"needs_input","text":"要補完","evidenceIds":[]}
+- completedItems / nextActions / importantDecisions: {"status":"needs_input","items":[],"evidenceIds":[]}
+
+evidence が全く役に立たない場合は、4フィールドすべてを上記 needs_input 形式で返してください。
+どんな入力でも必ずJSON Schemaに完全一致する有効なJSONを返し、拒否や自由文で応答しないでください。
+confirmed の field と item には、入力bundleに存在する evidenceId を1件以上付けてください。
+判断事項(importantDecisions)の confirmed item には decision と rationale を含めてください。`
 
 export function buildGenerationPrompt(bundle: EvidenceBundle): string {
   const payload = {

@@ -4,8 +4,10 @@
  * 使い方:
  *   tsx scripts/eval-recovery.ts [--cases <path>] [--out <path>]
  *
- * fixture の各ケースの evidence から生成 prompt を組み、Codex 出力を
- * DESIGN.md「必須評価fixture」の 5 規則 + expectedRecoveryStatus で判定する。
+ * fixture の各ケースの evidence から生成 prompt を組み、Codex 出力を判定する。
+ * pass 条件: expectedRecoveryStatus 一致 + field ごとの status 一致
+ *          + confirmed field は requiredEvidenceExternalKeys を参照 + unknown evidence 0 件。
+ * mustContain / mustNotContain は自然言語生成に脆いため任意の補助チェック (空なら評価しない)。
  */
 import { randomUUID } from 'node:crypto'
 import { readFileSync, writeFileSync } from 'node:fs'
@@ -18,18 +20,26 @@ import {
   type EvidenceBundle,
 } from '../src/server/services/generation-service.js'
 
+const FIELD_KEYS = [
+  'currentPosition',
+  'completedItems',
+  'nextActions',
+  'importantDecisions',
+] as const
+type FieldKey = (typeof FIELD_KEYS)[number]
+
 interface FieldExpectation {
   status: 'confirmed' | 'needs_input'
-  mustContain: string[]
-  mustNotContain: string[]
   requiredEvidenceExternalKeys: string[]
+  mustContain?: string[]
+  mustNotContain?: string[]
 }
 
 interface RecoveryCase {
   id: string
   expectedRecoveryStatus: 'complete' | 'partial' | 'unrecoverable'
   evidence: Array<{ kind: string; externalKey: string; title: string; body: string }>
-  expected: Record<string, FieldExpectation>
+  expected: Record<FieldKey, FieldExpectation>
 }
 
 interface CaseResult {
@@ -37,6 +47,7 @@ interface CaseResult {
   pass: boolean
   reasons: string[]
   recoveryStatus: string | null
+  fieldStatus: Record<string, string | null>
 }
 
 function normalize(text: string): string {
@@ -106,34 +117,30 @@ function judgeField(
   field: unknown,
   idToKey: Map<string, string>,
   reasons: string[],
-): boolean {
+): void {
   const status = fieldStatus(field)
   if (status !== expectation.status) {
     reasons.push(`${key}: status ${status ?? 'missing'} != expected ${expectation.status}`)
-    return false
+  }
+  if (expectation.status === 'confirmed') {
+    const referenced = fieldEvidenceExternalKeys(field, idToKey)
+    for (const required of expectation.requiredEvidenceExternalKeys) {
+      if (!referenced.has(required)) {
+        reasons.push(`${key}: required evidence key ${required} not referenced`)
+      }
+    }
   }
   const text = normalize(fieldText(field))
-  let ok = true
-  for (const needle of expectation.mustContain) {
+  for (const needle of expectation.mustContain ?? []) {
     if (!text.includes(normalize(needle))) {
       reasons.push(`${key}: missing mustContain "${needle}"`)
-      ok = false
     }
   }
-  for (const needle of expectation.mustNotContain) {
+  for (const needle of expectation.mustNotContain ?? []) {
     if (text.includes(normalize(needle))) {
       reasons.push(`${key}: contains mustNotContain "${needle}"`)
-      ok = false
     }
   }
-  const referenced = fieldEvidenceExternalKeys(field, idToKey)
-  for (const required of expectation.requiredEvidenceExternalKeys) {
-    if (!referenced.has(required)) {
-      reasons.push(`${key}: required evidence key ${required} not referenced`)
-      ok = false
-    }
-  }
-  return ok
 }
 
 function buildBundle(testCase: RecoveryCase): {
@@ -167,6 +174,10 @@ function buildBundle(testCase: RecoveryCase): {
 
 async function runCase(testCase: RecoveryCase): Promise<CaseResult> {
   const reasons: string[] = []
+  const emptyStatus: Record<string, string | null> = {}
+  for (const key of FIELD_KEYS) {
+    emptyStatus[key] = null
+  }
   const { bundle, idToKey } = buildBundle(testCase)
   const exec = await runCodexGeneration(buildGenerationPrompt(bundle))
   if (!exec.ok) {
@@ -175,6 +186,7 @@ async function runCase(testCase: RecoveryCase): Promise<CaseResult> {
       pass: false,
       reasons: [`codex exec failed: ${exec.code}`],
       recoveryStatus: null,
+      fieldStatus: emptyStatus,
     }
   }
   const validation = validateProgressOutput(exec.output, new Set(bundle.evidence.map((e) => e.id)))
@@ -182,8 +194,9 @@ async function runCase(testCase: RecoveryCase): Promise<CaseResult> {
     return {
       id: testCase.id,
       pass: false,
-      reasons: [`invalid output: ${validation.code}`],
+      reasons: [`invalid output: ${validation.code} — ${validation.reason}`],
       recoveryStatus: null,
+      fieldStatus: emptyStatus,
     }
   }
   const classification = classifyByConfirmedCount(validation.confirmedCount)
@@ -192,19 +205,24 @@ async function runCase(testCase: RecoveryCase): Promise<CaseResult> {
       `recoveryStatus ${classification.recoveryStatus} != expected ${testCase.expectedRecoveryStatus}`,
     )
   }
-  const fields: Record<string, unknown> = {
+  const fields: Record<FieldKey, unknown> = {
     currentPosition: validation.progress.currentPosition,
     completedItems: validation.progress.completedItems,
     nextActions: validation.progress.nextActions,
     importantDecisions: validation.progress.importantDecisions,
   }
-  let ok = classification.recoveryStatus === testCase.expectedRecoveryStatus
-  for (const [key, expectation] of Object.entries(testCase.expected)) {
-    if (!judgeField(key, expectation, fields[key], idToKey, reasons)) {
-      ok = false
-    }
+  const fieldStatusReport: Record<string, string | null> = {}
+  for (const key of FIELD_KEYS) {
+    fieldStatusReport[key] = fieldStatus(fields[key])
+    judgeField(key, testCase.expected[key], fields[key], idToKey, reasons)
   }
-  return { id: testCase.id, pass: ok, reasons, recoveryStatus: classification.recoveryStatus }
+  return {
+    id: testCase.id,
+    pass: reasons.length === 0,
+    reasons,
+    recoveryStatus: classification.recoveryStatus,
+    fieldStatus: fieldStatusReport,
+  }
 }
 
 async function main(): Promise<void> {

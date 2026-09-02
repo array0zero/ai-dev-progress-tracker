@@ -20,26 +20,18 @@
       "expected": {
         "currentPosition": {
           "status": "confirmed",
-          "mustContain": ["registration"],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": ["101"]
         },
         "completedItems": {
           "status": "confirmed",
-          "mustContain": ["hook"],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": ["205"]
         },
         "nextActions": {
           "status": "confirmed",
-          "mustContain": ["worker"],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": ["101"]
         },
         "importantDecisions": {
           "status": "confirmed",
-          "mustContain": ["worktree"],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": ["101"]
         }
       }
@@ -58,26 +50,18 @@
       "expected": {
         "currentPosition": {
           "status": "confirmed",
-          "mustContain": ["generation"],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": ["210"]
         },
         "completedItems": {
           "status": "confirmed",
-          "mustContain": ["validation"],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": ["210"]
         },
         "nextActions": {
           "status": "confirmed",
-          "mustContain": ["snapshot"],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": ["210"]
         },
         "importantDecisions": {
           "status": "confirmed",
-          "mustContain": ["auth"],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": ["210"]
         }
       }
@@ -102,26 +86,18 @@
       "expected": {
         "currentPosition": {
           "status": "confirmed",
-          "mustContain": ["backup"],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": ["115"]
         },
         "completedItems": {
           "status": "confirmed",
-          "mustContain": ["manifest"],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": ["220"]
         },
         "nextActions": {
           "status": "confirmed",
-          "mustContain": ["restore"],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": ["115"]
         },
         "importantDecisions": {
           "status": "confirmed",
-          "mustContain": ["scanner"],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": ["115"]
         }
       }
@@ -140,26 +116,18 @@
       "expected": {
         "currentPosition": {
           "status": "confirmed",
-          "mustContain": ["lease"],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": ["230"]
         },
         "completedItems": {
           "status": "confirmed",
-          "mustContain": ["heartbeat"],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": ["230"]
         },
         "nextActions": {
           "status": "confirmed",
-          "mustContain": ["stale"],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": ["230"]
         },
         "importantDecisions": {
           "status": "confirmed",
-          "mustContain": ["scope"],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": ["230"]
         }
       }
@@ -178,26 +146,18 @@
       "expected": {
         "currentPosition": {
           "status": "confirmed",
-          "mustContain": ["dashboard"],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": ["120"]
         },
         "completedItems": {
           "status": "confirmed",
-          "mustContain": ["card"],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": ["120"]
         },
         "nextActions": {
           "status": "confirmed",
-          "mustContain": ["banner"],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": ["120"]
         },
         "importantDecisions": {
           "status": "confirmed",
-          "mustContain": ["router"],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": ["120"]
         }
       }
@@ -216,26 +176,18 @@
       "expected": {
         "currentPosition": {
           "status": "confirmed",
-          "mustContain": ["hook"],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": ["240"]
         },
         "completedItems": {
           "status": "confirmed",
-          "mustContain": ["marker"],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": ["240"]
         },
         "nextActions": {
           "status": "confirmed",
-          "mustContain": ["uninstall"],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": ["240"]
         },
         "importantDecisions": {
           "status": "confirmed",
-          "mustContain": ["shebang"],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": ["240"]
         }
       }
@@ -254,26 +206,18 @@
       "expected": {
         "currentPosition": {
           "status": "confirmed",
-          "mustContain": ["version"],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": ["125"]
         },
         "completedItems": {
           "status": "confirmed",
-          "mustContain": ["doctor"],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": ["125"]
         },
         "nextActions": {
           "status": "confirmed",
-          "mustContain": ["dashboard"],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": ["125"]
         },
         "importantDecisions": {
           "status": "confirmed",
-          "mustContain": ["semver"],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": ["125"]
         }
       }
@@ -292,26 +236,18 @@
       "expected": {
         "currentPosition": {
           "status": "confirmed",
-          "mustContain": ["redact"],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": ["250"]
         },
         "completedItems": {
           "status": "confirmed",
-          "mustContain": ["pattern"],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": ["250"]
         },
         "nextActions": {
           "status": "confirmed",
-          "mustContain": ["script"],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": ["250"]
         },
         "importantDecisions": {
           "status": "confirmed",
-          "mustContain": ["backtracking"],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": ["250"]
         }
       }
@@ -330,26 +266,18 @@
       "expected": {
         "currentPosition": {
           "status": "confirmed",
-          "mustContain": ["classify"],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": ["130"]
         },
         "completedItems": {
           "status": "confirmed",
-          "mustContain": ["partial"],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": ["130"]
         },
         "nextActions": {
           "status": "confirmed",
-          "mustContain": ["commit"],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": ["130"]
         },
         "importantDecisions": {
           "status": "confirmed",
-          "mustContain": ["needs_input"],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": ["130"]
         }
       }
@@ -368,26 +296,18 @@
       "expected": {
         "currentPosition": {
           "status": "confirmed",
-          "mustContain": ["doctor"],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": ["260"]
         },
         "completedItems": {
           "status": "confirmed",
-          "mustContain": ["exit"],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": ["260"]
         },
         "nextActions": {
           "status": "confirmed",
-          "mustContain": ["readme"],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": ["260"]
         },
         "importantDecisions": {
           "status": "confirmed",
-          "mustContain": ["token"],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": ["260"]
         }
       }
@@ -399,26 +319,18 @@
       "expected": {
         "currentPosition": {
           "status": "needs_input",
-          "mustContain": [],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": []
         },
         "completedItems": {
           "status": "needs_input",
-          "mustContain": [],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": []
         },
         "nextActions": {
           "status": "needs_input",
-          "mustContain": [],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": []
         },
         "importantDecisions": {
           "status": "needs_input",
-          "mustContain": [],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": []
         }
       }
@@ -427,31 +339,28 @@
       "id": "rec-12-insufficient-title-only",
       "expectedRecoveryStatus": "unrecoverable",
       "evidence": [
-        { "kind": "issue", "externalKey": "301", "title": "Investigate flaky test", "body": "" }
+        {
+          "kind": "issue",
+          "externalKey": "301",
+          "title": "Investigate flaky test",
+          "body": ""
+        }
       ],
       "expected": {
         "currentPosition": {
           "status": "needs_input",
-          "mustContain": [],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": []
         },
         "completedItems": {
           "status": "needs_input",
-          "mustContain": [],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": []
         },
         "nextActions": {
           "status": "needs_input",
-          "mustContain": [],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": []
         },
         "importantDecisions": {
           "status": "needs_input",
-          "mustContain": [],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": []
         }
       }
@@ -470,26 +379,18 @@
       "expected": {
         "currentPosition": {
           "status": "needs_input",
-          "mustContain": [],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": []
         },
         "completedItems": {
           "status": "needs_input",
-          "mustContain": [],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": []
         },
         "nextActions": {
           "status": "needs_input",
-          "mustContain": [],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": []
         },
         "importantDecisions": {
           "status": "needs_input",
-          "mustContain": [],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": []
         }
       }
@@ -497,33 +398,33 @@
     {
       "id": "rec-14-insufficient-vague",
       "expectedRecoveryStatus": "unrecoverable",
-      "evidence": [{ "kind": "issue", "externalKey": "303", "title": "wip", "body": "stuff" }],
+      "evidence": [
+        {
+          "kind": "issue",
+          "externalKey": "303",
+          "title": "wip",
+          "body": "stuff"
+        }
+      ],
       "expected": {
         "currentPosition": {
           "status": "needs_input",
-          "mustContain": [],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": []
         },
         "completedItems": {
           "status": "needs_input",
-          "mustContain": [],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": []
         },
         "nextActions": {
           "status": "needs_input",
-          "mustContain": [],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": []
         },
         "importantDecisions": {
           "status": "needs_input",
-          "mustContain": [],
-          "mustNotContain": [],
           "requiredEvidenceExternalKeys": []
         }
       }
     }
-  ]
+  ],
+  "_note": "expected は field ごとの status と (confirmed の場合) 根拠として参照すべき evidence externalKey のみで判定する。mustContain/mustNotContain は使わない (自然言語生成の substring 一致は脆いため)。復元可能ケースは 3 フィールド前後が confirmed + 根拠、nextActions は evidence 次第。根拠不足ケース (rec-11..14) は 4 フィールドすべて needs_input で expectedRecoveryStatus=unrecoverable。"
 }
