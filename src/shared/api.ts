@@ -75,11 +75,26 @@ export interface ProjectSummary {
   backupStatus: string | null
 }
 
+/** v2 追加 field。v1 field は削除・rename しない。 */
+export interface ProjectSummaryV2 extends ProjectSummary {
+  summary: string
+  latestCommitSha: string | null
+  lastGeneratedCommitSha: string | null
+  lastGeneratedAt: string | null
+  lastUpdatedAt: string
+  unreflected: boolean
+  reviewRequired: boolean
+  hasNextAction: boolean
+  registrationSource: 'manual' | 'codex' | 'claude'
+}
+
 export interface ProjectDetail extends ProjectSummary {
   importantDecisions: DecisionView[]
   allEvidence: EvidenceRef[]
   missingFields: string[]
 }
+
+export interface ProjectDetailV2 extends ProjectDetail, ProjectSummaryV2 {}
 
 export interface RegisterProjectRequestBody {
   name: string

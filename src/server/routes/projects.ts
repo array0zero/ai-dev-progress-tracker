@@ -1,5 +1,12 @@
+import { existsSync } from 'node:fs'
 import type { FastifyPluginAsync } from 'fastify'
-import type { ApiErrorBody, DecisionView, ProjectDetail, ProjectSummary } from '../../shared/api.js'
+import type {
+  ApiErrorBody,
+  DecisionView,
+  ProjectDetail,
+  ProjectSummary,
+  ProjectSummaryV2,
+} from '../../shared/api.js'
 import { getLatestBackupRun } from '../db/backup-repository.js'
 import type { Db } from '../db/connection.js'
 import {
@@ -11,6 +18,7 @@ import {
 import { getProjectById, listProjects, type ProjectRecord } from '../db/project-repository.js'
 import { getLatestCommit, getLatestGenerationRun } from '../db/run-repository.js'
 import { registerProjectRequestSchema } from '../schemas/project.js'
+import { computeFreshness, readHeads, syncLocalMissing } from '../services/freshness-service.js'
 import { startGenerationWorker } from '../services/generation-service.js'
 import { type RegisterProjectResult, registerProject } from '../services/project-service.js'
 import { enqueueRecovery } from '../services/recovery-service.js'
@@ -67,6 +75,31 @@ function baseSummary(db: Db, project: ProjectRecord): ProjectSummary {
     generationStatus: latestGeneration?.status ?? null,
     backupStatus:
       latestBackup !== null && latestBackup.projectId === project.id ? latestBackup.status : null,
+  }
+}
+
+/** v1 summary へ v2 の鮮度 field を重ねる。v1 field の意味は変えない。 */
+function toSummaryV2(
+  db: Db,
+  project: ProjectRecord,
+  head: Awaited<ReturnType<typeof readHeads>> extends Map<string, infer T> ? T : never,
+): ProjectSummaryV2 {
+  const localMissing = syncLocalMissing(db, project, existsSync(project.localPath))
+  const freshness = computeFreshness(db, project, head, localMissing)
+  const summary = baseSummary(db, project)
+  return {
+    ...summary,
+    lastCommitSha: freshness.latestCommitSha ?? summary.lastCommitSha,
+    currentPosition: summary.currentPosition ?? freshness.currentPosition,
+    summary: project.summary,
+    latestCommitSha: freshness.latestCommitSha,
+    lastGeneratedCommitSha: freshness.lastGeneratedCommitSha,
+    lastGeneratedAt: freshness.lastGeneratedAt,
+    lastUpdatedAt: freshness.lastUpdatedAt,
+    unreflected: freshness.unreflected,
+    reviewRequired: project.reviewRequired,
+    hasNextAction: freshness.hasNextAction,
+    registrationSource: project.registrationSource,
   }
 }
 
@@ -157,15 +190,30 @@ function buildProjectDetail(db: Db, projectId: string): DetailResult {
 
 export function projectRoutes(db: Db): FastifyPluginAsync {
   return async (app) => {
-    app.get('/projects', async () => listProjects(db).map((project) => baseSummary(db, project)))
+    app.get('/projects', async () => {
+      const projects = listProjects(db)
+      const heads = await readHeads(projects)
+      return projects.map((project) => toSummaryV2(db, project, heads.get(project.id) ?? null))
+    })
 
     app.get('/projects/:id', async (request, reply) => {
       const { id } = request.params as { id: string }
+      const project = getProjectById(db, id)
+      if (project === null) {
+        return reply.code(404).send(errorBody('PROJECT_NOT_FOUND', 'Project not found.'))
+      }
+      const heads = await readHeads([project])
+      const v2 = toSummaryV2(db, project, heads.get(project.id) ?? null)
       const result = buildProjectDetail(db, id)
       if (!result.ok) {
         return reply.code(result.status).send(errorBody(result.code, result.message))
       }
-      return result.detail
+      return {
+        ...v2,
+        ...result.detail,
+        currentPosition: result.detail.currentPosition ?? v2.currentPosition,
+        lastCommitSha: v2.latestCommitSha ?? result.detail.lastCommitSha,
+      }
     })
 
     app.post('/projects', async (request, reply) => {
