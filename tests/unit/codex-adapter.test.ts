@@ -106,10 +106,13 @@ describe('codex adapter', () => {
     expect(await runCodexGeneration('p')).toEqual({ ok: false, code: 'CODEX_OUTPUT_INVALID' })
   })
 
-  it('does not pass OPENAI_API_KEY / OPENAI_ORG_ID / OPENAI_PROJECT_ID to the child', async () => {
+  it('scrubs OpenAI / Anthropic / GitHub credentials from the child env', async () => {
     vi.stubEnv('OPENAI_API_KEY', 'sk-should-not-leak')
     vi.stubEnv('OPENAI_ORG_ID', 'org-should-not-leak')
     vi.stubEnv('OPENAI_PROJECT_ID', 'proj-should-not-leak')
+    vi.stubEnv('ANTHROPIC_API_KEY', 'sk-ant-should-not-leak')
+    vi.stubEnv('GH_TOKEN', 'ghp_should_not_leak')
+    vi.stubEnv('GITHUB_TOKEN', 'ghp_should_not_leak_either')
     const fake = fakeCodex({ output: VALID_OUTPUT })
 
     await runCodexGeneration('p')
@@ -118,6 +121,9 @@ describe('codex adapter', () => {
       OPENAI_API_KEY: null,
       OPENAI_ORG_ID: null,
       OPENAI_PROJECT_ID: null,
+      ANTHROPIC_API_KEY: null,
+      GH_TOKEN: null,
+      GITHUB_TOKEN: null,
     })
   })
 })

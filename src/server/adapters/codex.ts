@@ -105,7 +105,15 @@ export interface CodexExecOptions {
 
 export type CodexExecResult = { ok: true; output: unknown } | { ok: false; code: string }
 
-const OPENAI_ENV_KEYS = ['OPENAI_API_KEY', 'OPENAI_ORG_ID', 'OPENAI_PROJECT_ID'] as const
+/** child process へ渡さない secret env。AI / GitHub の資格情報はすべて落とす。 */
+const SCRUBBED_ENV_KEYS = [
+  'OPENAI_API_KEY',
+  'OPENAI_ORG_ID',
+  'OPENAI_PROJECT_ID',
+  'ANTHROPIC_API_KEY',
+  'GH_TOKEN',
+  'GITHUB_TOKEN',
+] as const
 
 /**
  * DESIGN.md 固定 argv で Codex exec を起動する。
@@ -122,7 +130,7 @@ export async function runCodexGeneration(
   const schemaPath = options.schemaPath ?? progressSchemaPath()
 
   const childEnv: NodeJS.ProcessEnv = { ...process.env }
-  for (const key of OPENAI_ENV_KEYS) {
+  for (const key of SCRUBBED_ENV_KEYS) {
     delete childEnv[key]
   }
 

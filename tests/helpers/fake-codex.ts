@@ -56,6 +56,9 @@ writeFileSync(
     OPENAI_API_KEY: process.env.OPENAI_API_KEY ?? null,
     OPENAI_ORG_ID: process.env.OPENAI_ORG_ID ?? null,
     OPENAI_PROJECT_ID: process.env.OPENAI_PROJECT_ID ?? null,
+    ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ?? null,
+    GH_TOKEN: process.env.GH_TOKEN ?? null,
+    GITHUB_TOKEN: process.env.GITHUB_TOKEN ?? null,
   }),
 )
 

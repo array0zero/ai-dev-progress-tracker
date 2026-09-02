@@ -14,6 +14,8 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
+import { runAgentEvent } from '../src/cli/commands/agent-event.js'
+import { loadConfig } from '../src/server/config.js'
 import { openDatabase } from '../src/server/db/connection.js'
 import { getRunById } from '../src/server/db/run-repository.js'
 import { createLogger } from '../src/server/logging.js'
@@ -49,11 +51,76 @@ const ENV_SENTINELS: Record<string, string> = {
   TRACKER_TEST_PASSWORD: 'SENTINELenvPw77aa',
 }
 
+/** agent event 由来の本文。DB / log / backup のどこにも残ってはいけない。 */
+const AGENT_SENTINELS = {
+  prompt: 'SENTINELpromptBodyDoNotStore',
+  assistant: 'SENTINELassistantMessageDoNotStore',
+  transcript: 'C:/transcripts/SENTINELtranscriptPath.jsonl',
+  sessionId: 'SENTINELsession-9f21',
+}
+
 const NEEDLES: string[] = [
-  ...new Set([...Object.values(SENTINELS), ...Object.values(ENV_SENTINELS)]),
+  ...new Set([
+    ...Object.values(SENTINELS),
+    ...Object.values(ENV_SENTINELS),
+    ...Object.values(AGENT_SENTINELS),
+  ]),
   'SENTINELkeymaterial',
   'SENTINEL',
 ]
+
+/** 新規 dependency に network SaaS SDK が混ざっていないこと (追加課金 0 円の担保)。 */
+const FORBIDDEN_DEPENDENCY_PATTERNS = [
+  'openai',
+  '@anthropic-ai/',
+  '@octokit/',
+  'aws-sdk',
+  '@aws-sdk/',
+  '@sentry/',
+  'datadog',
+  'newrelic',
+  'segment',
+  'posthog',
+  'mixpanel',
+  'stripe',
+  'firebase',
+  '@supabase/',
+]
+
+function checkDependencies(): string[] {
+  const pkg = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8')) as {
+    dependencies?: Record<string, string>
+    devDependencies?: Record<string, string>
+  }
+  const names = [...Object.keys(pkg.dependencies ?? {}), ...Object.keys(pkg.devDependencies ?? {})]
+  return names.filter((name) =>
+    FORBIDDEN_DEPENDENCY_PATTERNS.some((pattern) => name.toLowerCase().includes(pattern)),
+  )
+}
+
+/** agent event を handler へ通し、cwd 以外が保存されないことを確認する。 */
+async function runAgentEvents(dataDir: string, folder: string): Promise<void> {
+  const config = loadConfig({ TRACKER_DATA_DIR: dataDir, TRACKER_PORT: '4319' })
+  const codexPayload = JSON.stringify({
+    type: 'agent-turn-complete',
+    cwd: folder,
+    'turn-id': AGENT_SENTINELS.sessionId,
+    'input-messages': [AGENT_SENTINELS.prompt],
+    'last-assistant-message': AGENT_SENTINELS.assistant,
+  })
+  const claudePayload = JSON.stringify({
+    hook_event_name: 'UserPromptSubmit',
+    session_id: AGENT_SENTINELS.sessionId,
+    transcript_path: AGENT_SENTINELS.transcript,
+    cwd: folder,
+    prompt: AGENT_SENTINELS.prompt,
+  })
+  await runAgentEvent({ agent: 'codex', input: 'argv', payload: codexPayload }, { config })
+  await runAgentEvent(
+    { agent: 'claude', input: 'stdin' },
+    { config, readStdin: async () => claudePayload },
+  )
+}
 
 interface Hit {
   target: string
@@ -202,6 +269,12 @@ async function build(
   const rawExport = exportBackupData(db).dataJson
   const gatePassed = createBackupExport(db).ok
   db.close()
+
+  // agent event の本文 (prompt / assistant message / transcript path / session id) が
+  // DB・log のどこにも残らないことを同じ data dir で確認する。
+  const agentFolder = join(work, 'agent-folder')
+  mkdirSync(agentFolder, { recursive: true })
+  await runAgentEvents(dataDir, agentFolder)
   return { dataDir, rawExport, gatePassed }
 }
 
@@ -211,7 +284,8 @@ async function main(): Promise<void> {
     const { dataDir, rawExport, gatePassed } = await build(work)
 
     const targets: Array<{ name: string; text: string }> = [
-      { name: 'backup-export:data/backup-v1.json', text: rawExport },
+      { name: 'backup-export:data/backup-v2.json', text: rawExport },
+      { name: 'config-example:.env.example', text: readFileSync('.env.example', 'utf8') },
     ]
     for (const file of walkFiles(dataDir)) {
       targets.push({ name: relative(dataDir, file), text: readFileSync(file).toString('latin1') })
@@ -226,8 +300,10 @@ async function main(): Promise<void> {
       }
     }
 
+    const forbiddenDependencies = checkDependencies()
     const report = {
       tool: 'verify:secrets',
+      forbiddenDependencies,
       scannedTargets: targets.length,
       sentinelCount: NEEDLES.length,
       backupSecretGatePassed: gatePassed,
@@ -235,7 +311,7 @@ async function main(): Promise<void> {
       hits,
     }
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`)
-    process.exitCode = hits.length === 0 ? 0 : 1
+    process.exitCode = hits.length === 0 && forbiddenDependencies.length === 0 ? 0 : 1
   } finally {
     rmSync(work, { recursive: true, force: true })
   }

@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { isSecretKey, REDACTED, redactSecrets } from '../../src/server/security/redaction.js'
+import {
+  containsHighConfidenceSecret,
+  isSecretKey,
+  REDACTED,
+  redactHighConfidenceSecrets,
+  redactSecrets,
+} from '../../src/server/security/redaction.js'
 
 describe('redactSecrets', () => {
   it('removes every sentinel held under a secret key, at any depth', () => {
@@ -50,5 +56,39 @@ describe('redactSecrets', () => {
     const input = { token: 'SENTINEL' }
     redactSecrets(input)
     expect(input.token).toBe('SENTINEL')
+  })
+})
+
+describe('high-confidence scanner (negative gate)', () => {
+  const NL = String.fromCharCode(10)
+  // 保存面へ入り込みうる形の偽 token。scanner は必ず検知しなければならない。
+  const injected: Array<[string, string]> = [
+    ['github token', 'ghp_0123456789abcdefghijABCDEFGHIJKL'],
+    ['github pat', 'github_pat_11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyz0123456789ABCDEF'],
+    ['openai key', 'sk-0123456789abcdefghijklmn'],
+    ['anthropic key', 'sk-ant-0123456789abcdefghij'],
+    ['aws access key id', 'AKIA0123456789ABCDEF'],
+    [
+      'pem private key',
+      ['-----BEGIN PRIVATE KEY-----', 'MIIkeymaterial0000', '-----END PRIVATE KEY-----'].join(NL),
+    ],
+    ['password key-value', 'password=hunter2superSecretValue'],
+    ['url credential', 'https://deploy:sup3rSecretPw@registry.example.com'],
+  ]
+
+  for (const [label, secret] of injected) {
+    it(`fails the scan when a ${label} is injected into a stored surface`, () => {
+      const surface = ['commit message', secret, 'more text'].join(NL)
+      expect(containsHighConfidenceSecret(surface)).toBe(true)
+      const redacted = redactHighConfidenceSecrets(surface)
+      expect(redacted).not.toContain(secret)
+      expect(containsHighConfidenceSecret(redacted)).toBe(false)
+    })
+  }
+
+  it('leaves ordinary text alone', () => {
+    const text = ['feat(dashboard): 8件を1画面へ並べる', 'refs #123'].join(NL)
+    expect(containsHighConfidenceSecret(text)).toBe(false)
+    expect(redactHighConfidenceSecrets(text)).toBe(text)
   })
 })

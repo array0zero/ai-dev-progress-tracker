@@ -24,6 +24,7 @@ import {
   backupDataV2Schema,
   parseBackupManifest,
 } from '../../src/server/schemas/backup.js'
+import { containsHighConfidenceSecret } from '../../src/server/security/redaction.js'
 import {
   BACKUP_GITATTRIBUTES,
   createBackupExport,
@@ -331,6 +332,43 @@ describe('backup v2 export and v1/v2 restore', () => {
       expect(listCandidates(db).map((item) => item.id)).toEqual([candidateId])
     } finally {
       db.close()
+    }
+  })
+
+  it('never carries secrets, run bookkeeping or auth payloads into the backup', () => {
+    const { projectId } = seedV2()
+    // 保存前に redaction を通す経路 (commits.message) へ token を混ぜる
+    upsertCommit(ctx.db, {
+      projectId,
+      sha: 'b'.repeat(40),
+      parentSha: null,
+      message: 'chore: rotate ghp_0123456789abcdefghijABCDEFGHIJKL',
+      authoredAt: '2026-09-02T00:00:00.000Z',
+      detectedAt: '2026-09-02T00:00:03.000Z',
+    })
+    ctx.db
+      .prepare(
+        "INSERT INTO backup_runs (id, trigger, project_id, source_commit_sha, backup_repo, status, queued_at) VALUES (?, 'manual', ?, NULL, 'octo/backup', 'succeeded', '2026-09-02T00:00:04.000Z')",
+      )
+      .run(randomUUID(), projectId)
+    ctx.db
+      .prepare(
+        "INSERT INTO worker_leases (scope, owner_token, heartbeat_at) VALUES ('backup', 'secret-owner-token', '2026-09-02T00:00:05.000Z')",
+      )
+      .run()
+
+    const exported = createBackupExport(ctx.db)
+    expect(exported.ok).toBe(true)
+    if (!exported.ok) {
+      return
+    }
+    expect(exported.dataJson).not.toContain('ghp_0123456789abcdefghijABCDEFGHIJKL')
+    expect(exported.dataJson).not.toContain('secret-owner-token')
+    expect(exported.dataJson).not.toContain('backupRuns')
+    expect(exported.dataJson).not.toContain('workerLeases')
+    expect(containsHighConfidenceSecret(exported.dataJson)).toBe(false)
+    for (const key of ['authorization', 'cookie', 'api_key', 'access_token']) {
+      expect(exported.dataJson.toLowerCase()).not.toContain(key)
     }
   })
 })

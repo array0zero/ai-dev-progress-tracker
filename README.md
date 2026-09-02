@@ -146,10 +146,25 @@ npm run cli -- restore --force   # 既存 DB を .pre-restore-<timestamp> へ退
 - 標準の AI 経路は Codex CLI の **ChatGPT 認証のみ**です。
   API key 用の設定・コード経路は追加しません。
 - `codex login status` が ChatGPT 認証でない場合は生成を実行しません。
-- Codex の子プロセスへ `OPENAI_API_KEY` (および `OPENAI_ORG_ID` / `OPENAI_PROJECT_ID`) を
-  渡しません。
+- Codex の子プロセスへ `OPENAI_API_KEY` / `OPENAI_ORG_ID` / `OPENAI_PROJECT_ID` /
+  `ANTHROPIC_API_KEY` / `GH_TOKEN` / `GITHUB_TOKEN` を渡しません。
 - `gh auth token` / `gh auth status --show-token` は呼びません。
 - token / password / API key を アプリ DB・設定・ログ・backup へ保存しません。
+- Codex / Claude Code の event からは **event 種別と cwd だけ**を使います。
+  prompt 本文・assistant message・transcript path・session id は DB にもログにも残しません。
+
+### 使用する外部サービスと費用
+
+| サービス | 用途 | 追加費用 |
+|----------|------|----------|
+| GitHub (`gh` CLI の既存認証) | Private repository の作成・参照、backup の push/clone | なし (既存アカウント) |
+| Codex CLI (既契約の ChatGPT 認証) | 進捗生成 (`gpt-5.6-terra`) | なし (既契約の範囲) |
+| Claude Code (既存インストール) | 未登録フォルダの検知 hook のみ。AI 生成には使いません | なし |
+
+- 上記以外の外部サービスは使いません。**追加の固定費 0 円 / 月、追加の従量課金 0 円 / 月**です。
+- ネットワーク SaaS の SDK (OpenAI / Anthropic / Octokit / AWS / APM / 解析 / 決済など) を
+  依存関係に追加しません。`npm run verify:secrets` がこの条件も検査します。
+- アプリはローカルの `127.0.0.1` にのみ bind し、クラウドホスティングを使いません。
 
 ---
 
