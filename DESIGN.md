@@ -1,255 +1,241 @@
 # DESIGN.md — 設計書
 
 project_id: ai-dev-progress-tracker  
-version: 1.7  
+version: 2.1  
 date: 2026-09-02  
-source: PLAN.md v1.2 + 実機検証結果（2026-09-01）+ Windows実機不具合修正（2026-09-01）+ 空backup repo初回同期修正（2026-09-01）+ backup改行変換によるchecksum不一致修正（2026-09-01）+ generation評価harnessの隔離と期待値是正（2026-09-01）+ recovery出力受理の堅牢化（2026-09-02）
+source: PLAN.md v1.1 + 公開 `ai-dev-progress-tracker` commit `c281f91` / DESIGN.md v1.7 + 2026-09-02実測環境
 
-## v1.7変更点
+## 0. 受入検査・実測環境・v1.3〜v1.7互換インベントリ
 
-- 根拠が乏しい recovery ケースで Codex 出力が `CODEX_OUTPUT_INVALID` になり snapshot が全く残らない問題を修正。原因は prompt が `needs_input` の固定形式を指定しておらず、モデルが needs_input に説明文や evidenceId を付けてしまうこと。
-- AI prompt固定契約へ `needs_input` の固定形式、「タイトルのみ / 空 / 曖昧 / routine変更は根拠不足」「有効なJSONを必ず返す（拒否・自由文禁止）」を明記。
-- `validateProgressOutput` を寛容側へ: `needs_input` field を固定形式へ正規化、`importantDecisions` confirmed の形式不備 decision item を除去（field-level evidence があれば維持）。run 全体を失効させない。
-- `eval-recovery.ts` の pass 条件から `mustContain` / `mustNotContain` を除外（`eval-generation.ts` と統一）。`recovery-cases.json` の expected を `status` + `requiredEvidenceExternalKeys` のみへ簡素化。
-- 設計判断ログに D025 を追加。
+### 0.1 受入検査
 
-## v1.6変更点
+**判定: 合格。**
 
-- `eval-generation.ts`が対象repoに直接commitして呼び出し元のbranch / working treeを汚す問題を修正。HEADから切り出したdetachedな`git worktree`内でのみcommitし、終了時にworktreeごと破棄する。fixtureの`files`は新規ファイル（`docs/eval/<id>.md`）のみに限定。
-- `generation-cases.json`の`expected`を実測へ是正: `importantDecisions`は`confirmed` + 根拠（旧fixtureは誤って`needs_input`を期待）、`nextActions`は単一commitでは根拠不足のため`needs_input`を期待。自然言語生成に脆い`mustContain` / `mustNotContain`のsubstring一致は必須条件から外し任意の補助チェックに変更。
-- 評価pass条件を「status一致 + confirmed fieldは根拠必須 + unknown evidence 0 + start latency <= 60秒」に整理。
-- project repo rootへ`.gitattributes`（`* text=auto eol=lf`）を追加。Windowsの`core.autocrlf`で`git checkout`がCRLF化するとbiome（LF）と食い違い`npm run lint` / `test:all`がローカルで失敗するため、全プラットフォームでLFへ正規化する（backup repoの`.gitattributes`と同じ改行方針）。
-- 設計判断ログにD024を追加。
+- US-01〜US-12の全ユーザーストーリーに受け入れ基準がある。
+- 非機能要件は、初回表示2.0秒以内、検索・絞り込み0.5秒以内、主要フロー5回連続の異常終了0回、秘密情報保存0件、未登録候補反映率100%、追加固定費0円/月、追加従量課金0円/月、データ自動削除0件として検証可能である。
+- F13/F14は既存 `ai-dev-progress-tracker` 実装を物理仕様の唯一の正とする設計ゲートがPLAN.md v1.1で定義され、公開リポジトリを参照できたため詳細設計可能である。
 
-## v1.5変更点
+### 0.2 実測環境
 
-- Windowsのgitが`core.autocrlf`でbackupファイルの改行をcheckout時にLF→CRLF変換するため、生成時の`sha256`とclone後のbyte列が一致せず、`restore`が`BACKUP_CHECKSUM_MISMATCH`で失敗する不具合を修正。
-- backup repo rootへ`.gitattributes`（`* -text\n`）を追加し、`manifest.json` / `data/backup-v1.json`を改行変換対象から外す。既存repoは次回backupで`.gitattributes`を追加commit/pushして置き換える。
-- backup / restoreの既存clone再利用時に`git pull --ff-only`後`git checkout HEAD -- .`で追跡ファイルを現在の属性で再展開する。backup commitは`-c commit.gpgsign=false`で行う。
-- 設計判断ログにD023を追加。
+| 項目 | 実測値 / 設計上の固定 |
+|---|---|
+| OS | Windows系PowerShell環境であることを実測。edition/buildは未計測。Windows対応下限は既存v1.3設計を継承して **Windows 11 24H2以降 + Git for Windows** |
+| Node.js | `v24.15.0`。製品下限 `>=24.15.0`、上限なし |
+| npm | `12.0.2`。製品下限 `>=12.0.2`、上限なし |
+| Python | `3.14.5`。製品ランタイム依存にはしない |
+| Git | `2.45.1.windows.1`。製品下限 `>=2.45.0`、上限なし |
+| GitHub CLI | `2.98.0`。製品下限 `>=2.98.0`、上限なし。`gh auth status` 認証済み |
+| Codex CLI | `0.152.0`。製品下限 `>=0.152.0`、上限なし。ChatGPT認証済み |
+| Claude Code | `2.1.258`。製品下限 `>=2.1.258`、上限なし。認証状態は未計測のため実機タスクで確認 |
+| ブラウザviewport | `2005 x 1271` CSS px。UI密度・性能受入の固定viewport |
+| ブラウザ名/version | 未計測。自動E2EはPlaywright同梱Chromium。最終手動受入で実利用ブラウザ名/versionを記録 |
 
-## v1.4変更点
+### 0.3 v1.3〜v1.7互換インベントリ
 
-- `gh repo create`直後のbackup repoはcommitが1つも無く、これをcloneした作業treeからの`git pull --ff-only`が参照不在で失敗し、初回backupが`BACKUP_PULL_FAILED`になる不具合を修正。
-- backup workerのclone取得手順を明文化: commitのあるcloneのみ`pull --ff-only`し、unborn HEAD（初回）ではpullをスキップする。
-- 初回pushを`git push -u origin main`（明示refspec + upstream）に変更し、commit前に`git symbolic-ref HEAD refs/heads/main`で固定branch `main`へ寄せる。
-- 設計判断ログにD022を追加。
+2026-09-02に公開commit `c281f91` を確認し、`DESIGN.md` **v1.7** と実装を互換性の正本として固定する。v1.7は物理JSON Schemaを変更していないが、AI promptと生成出力の受理・正規化、およびrecovery評価条件を更新しているため、これらもF13の「v1.3既存運用を維持」に含める。
 
-## v1.3変更点
+| 正本 | v2.0での契約 |
+|---|---|
+| `schemas/progress-output.schema.json` | **変更禁止**。`schemaVersion=1`、`currentPosition` / `completedItems` / `nextActions` / `importantDecisions` と既存 evidence 契約を維持 |
+| `db/migrations/001_init.sql` | **変更禁止**。既存テーブル・制約をv1基盤として維持。v2追加は `002_v2.sql` のみ |
+| `src/shared/domain.ts` | 既存status/run/backup型を破壊しない。v2型は追加のみ |
+| `src/shared/api.ts` | 既存APIフィールドを削除・rename・意味変更しない。v2フィールドは追加のみ |
+| `src/server/services/generation-service.ts` @ `c281f91` | `PROMPT_CONTRACT` のv1.7固定契約を維持する。根拠本文だけでconfirmedを許可し、根拠不足は固定`needs_input`、常にschema-valid JSONを要求し、confirmedは既存evidence IDを必須とする |
+| `src/server/schemas/progress.ts` @ `c281f91` | `validateProgressOutput` のv1.7受理規則を維持する。`needs_input`を固定形へ正規化し、不正なdecision itemだけを除去可能とし、unknown evidenceやtop-level schema不一致は失敗させる |
+| `scripts/eval-recovery.ts` + `tests/fixtures/recovery-cases.json` @ `c281f91` | default recovery fixtureのexpectedはrecovery status、field status、confirmed fieldのrequired evidenceを正本とする。`mustContain` / `mustNotContain` は任意補助checkとしてのみ残し、default fixtureの必須expectedへ戻さない。unknown evidence 0件も維持する |
+| `schemas/backup-v1.schema.json` | **変更禁止**。v1バックアップのrestore入力として永続サポート |
+| Private backup構成 | `<gh active user>/ai-dev-progress-tracker-backup`、branch `main`、`.gitattributes`=`* -text`、manifest/checksum方式を維持 |
+| `src/server/adapters/process-runner.ts` | Windows `.cmd/.bat` shimを `%ComSpec% /d /s /c`、`shell:false` で起動する既存方式を維持 |
+| commit/push hook | `post-commit` は進捗生成、`pre-push` は同期・バックアップのみ |
+| AI生成 | Codex CLI + ChatGPT認証 + `gpt-5.6-terra` を維持。Claude Codeを進捗生成backendに追加しない |
 
-- Windows実機で `codex` の実体が `.cmd` shim のため `spawn(shell:false)` で起動できず、進捗生成が全て失敗する不具合を修正。
-- process runnerを、Windowsで `PATH` + `PATHEXT` から実体を解決し、`.cmd` / `.bat` shim は `%ComSpec% /d /s /c` 経由で（それでもshellを介さず）起動するように変更。`gh` / `git` / `codex` すべてこの経路を共有する。
-- Codex実行直前検査で「versionを取得できなかった（spawn失敗 / timeout / 非0終了）」場合を `CODEX_VERSION_CHECK_FAILED`、認証状態を取得できなかった場合を `CODEX_AUTH_CHECK_FAILED` として、`CODEX_VERSION_UNSUPPORTED`（取得できたが下限未満）/ `VERSION_PARSE_ERROR`（取得できたが抽出不能）と区別する。
-- 設計判断ログにD021を追加。
+### 0.4 v1.7 AI生成・recovery互換契約
 
-## v1.2変更点
+v2.0で維持するv1.7の意味契約を以下に固定する。
 
-- npm `12.0.2`は依存パッケージのinstall scriptを既定でblockするため、`package.json`へ`allowScripts`フィールドを追加し、`better-sqlite3`と`esbuild`のみをバージョンピンで許可する。
-- `better-sqlite3`は型定義を同梱しないため、`devDependencies`へ型定義専用パッケージ`@types/better-sqlite3`を`9.6.0`固定で追加する。ランタイム依存・採用技術は変更しない。
-- 上記はdependencies/devDependenciesの既存バージョン指定・ディレクトリ構成を変更しない。npm `12.0.2`と既存16件の完全一致固定は維持する。
-- 設計判断ログにD019・D020を追加。
+- confirmed:
+  - evidence本文に明示された事実だけを使う。
+  - Issue/PRのタイトルだけ、空本文、曖昧/一語の本文、依存更新・lockfile・format等のroutine変更だけでは進捗をconfirmedにしない。
+  - fieldおよびitemがconfirmedの場合、当該runに存在するevidence IDを1件以上参照する。
+  - `importantDecisions` のconfirmed itemはdecisionとrationaleを両方持つ。
+- needs_input canonical form:
+  - `currentPosition` → `{"status":"needs_input","text":"要補完","evidenceIds":[]}`
+  - `completedItems` / `nextActions` / `importantDecisions` → `{"status":"needs_input","items":[],"evidenceIds":[]}`
+  - evidenceが進捗判断に利用できない場合は4fieldすべてneeds_inputを許容し、snapshotを残す。
+- output:
+  - Codexには拒否文・自由文ではなく、常に`progress-output.schema.json`へ適合するJSONを返すよう要求する。
+- `validateProgressOutput`:
+  - top-levelのZod/schema shapeが不正なら`CODEX_OUTPUT_INVALID`。
+  - status=`needs_input` のfieldに説明文、item、evidence IDが付いていても、schema parse可能な範囲なら上記canonical formへ落として受理する。
+  - `importantDecisions.status=confirmed`で、decision/rationaleが空、またはitem-level evidenceが0件のitemは除去する。field-level evidenceが1件以上あれば`items=[]`のconfirmedとして受理可能。
+  - available evidenceに存在しないIDをconfirmed field/itemが参照した場合は`UNKNOWN_EVIDENCE_ID`。
+  - 正規化はモデルの余計な推測を削除する処理であり、推測内容を確定保存する処理ではない。
+- recovery評価:
+  - default `recovery-cases.json` のexpectedはexpected recovery status、各field status、confirmed fieldのrequired evidence external keyで固定し、自然言語本文をexpectedへ固定しない。
+  - `mustContain` / `mustNotContain` は指定された場合だけ補助checkとして評価可能だが、default fixtureの必須expectedへ再導入しない。
+  - unknown evidence ID 0件を維持する。
+  - v1.7基準として復元可能10case中8case以上、根拠不足4caseは4/4で`unrecoverable`をrelease regression gateとする。
 
-## v1.1変更点
+既存DBの論理リレーション:
+- `projects` 1:N `commits`
+- `projects` 1:N `evidence`
+- `projects` 1:N `generation_runs`
+- `generation_runs` N:M `evidence` via `run_evidence`
+- `generation_runs` 1:0..1 `progress_snapshots`
+- `projects` 1:N `progress_snapshots`
+- `projects` 1:N `backup_runs`
 
-- Node.js: 完全一致指定を廃止し、`>=24.15.0 <25`へ変更。
-- Git: 既存の最低バージョン`>=2.45.0`を維持。今回の実測値は未提示。
-- GitHub CLI (`gh`): 完全一致指定を廃止し、`>=2.98.0`へ変更。
-- Codex CLI: 完全一致指定を廃止し、`>=0.146.0`へ変更。
-- Codex認証要件`Logged in using ChatGPT`とモデル`gpt-5.6-terra`は維持。
-- npm package manager `12.0.2`と、package.jsonのdependencies/devDependencies 16件（合計17件のnpm package指定）の完全一致固定は変更しない。
-- CIのNode.jsは実機検証済み下限と同じ`24.15.0`を使用する。
-- `doctor`、server起動時、Codex実行直前のversion判定は文字列完全一致ではなくsemantic version比較を使用する。
-- 本v1.1のversion要件は、旧AGENTS.md等に残るv1.0の外部CLI完全一致記述より優先する。
-
-## 0. 受入検査結果
-
-**判定: 合格。設計へ進む。**
-
-| 検査項目 | 判定 | 確認結果 |
-|---|---|---|
-| 受け入れ基準のないユーザーストーリーがある | 合格 | US-01〜US-07の全てにGiven/When/Then形式の受け入れ基準がある |
-| 非機能要件が数値化されていない | 合格 | 表示2秒、起動10/10、生成8/10、復元8/10、失敗可視化100%、秘密情報保存0件、追加コスト0円等で判定可能 |
-| MUST機能が曖昧で実装判断できない | 合格 | F1〜F7の未確定点はPLANで設計AIへ明示委譲されており、本設計で具体化する |
-
----
+v2追加:
+- `projects` 1:N `registration_candidates`。candidate登録完了時のみ `project_id` を設定する。
+- `registration_candidates.local_path` は一意。同一フォルダのCodex/Claudeイベントは同一candidateへ収束する。
 
 ## 1. アーキテクチャ概要
 
-### 構成図
-
 ```text
-┌────────────────────────── 対象ローカルGitリポジトリ ──────────────────────────┐
-│                                                                            │
-│  git commit                                                                │
-│     │                                                                      │
-│     └─ .git/hooks/post-commit                                              │
-│           │                                                                │
-│           └─ tracker CLI: hook-commit                                      │
-│                ├─ commitをDBへ登録                                         │
-│                ├─ generation_runを重複排除付きでqueued化                   │
-│                └─ detached workerを起動して即時終了                        │
-│                                                                            │
-│  git push                                                                  │
-│     │                                                                      │
-│     └─ .git/hooks/pre-push                                                 │
-│           └─ tracker CLI: hook-backup                                      │
-│                ├─ backup_runをqueued化                                     │
-│                └─ detached workerを起動してpush自体は妨げない              │
-└────────────────────────────────────────────────────────────────────────────┘
-                         │
-                         ▼
-┌──────────────────── AI Dev Progress Tracker ────────────────────────────────┐
-│                                                                            │
-│  Fastify HTTP server (127.0.0.1:4317)                                      │
-│      ├─ REST API                                                           │
-│      └─ React/Vite静的UI                                                   │
-│                                                                            │
-│  SQLite                                                                    │
-│      ├─ projects                                                           │
-│      ├─ commits                                                            │
-│      ├─ evidence                                                           │
-│      ├─ generation_runs                                                    │
-│      ├─ run_evidence                                                       │
-│      ├─ progress_snapshots                                                 │
-│      └─ backup_runs                                                        │
-│                                                                            │
-│  Generation worker                                                        │
-│      ├─ local git: commit metadata / diff                                  │
-│      ├─ gh CLI: Issue / Pull Request                                       │
-│      ├─ Codex CLI: structured progress generation                          │
-│      ├─ Zod + evidence参照整合性検証                                       │
-│      └─ snapshot保存 / failed・partial可視化                               │
-│                                                                            │
-│  Backup worker                                                             │
-│      ├─ DB内容を決定的JSONへexport                                         │
-│      ├─ SHA-256 manifest生成                                               │
-│      ├─ 専用Private repoへcommit                                           │
-│      └─ push                                                               │
-│                                                                            │
-│  Restore CLI                                                               │
-│      ├─ Private repo clone/pull                                            │
-│      ├─ checksum / schema / FK検証                                         │
-│      ├─ 新規SQLiteへimport                                                 │
-│      ├─ atomic replace                                                     │
-│      └─ 対象repoへhook再設置                                               │
-└────────────────────────────────────────────────────────────────────────────┘
-        │                         │                            │
-        ▼                         ▼                            ▼
- GitHub CLI >=2.98.0        Codex CLI >=0.146.0      Backup Private repository
- 既存gh認証を利用            ChatGPT認証のみ許可       <login>/ai-dev-progress-tracker-backup
+┌────────────── Codex CLI ──────────────┐   ┌──────────── Claude Code ────────────┐
+│ ~/.codex/config.toml top-level notify │   │ ~/.claude/settings.json             │
+│ first completed turn -> JSON argv     │   │ UserPromptSubmit -> JSON stdin      │
+└─────────────────┬─────────────────────┘   └─────────────────┬──────────────────┘
+                  │ cwd                                        │ cwd
+                  └──────────────────┬───────────────────────────┘
+                                     ▼
+                        tracker CLI `agent-event`
+                    canonicalize cwd / idempotent candidate
+                                     │
+             ┌───────────────────────┼─────────────────────────┐
+             ▼                       ▼                         ▼
+      SQLite candidate upsert   local server ensure      browser open
+                                                             │
+                                                             ▼
+┌──────────────── AI Dev Progress Tracker / 127.0.0.1:4317 ───────────────────┐
+│ Fastify API + React/Vite UI                                                 │
+│  ├─ Dashboard: dense / compact / search / status filter / freshness         │
+│  ├─ Registration prompt / unregistered candidates                           │
+│  └─ Detail: current state / history / review / regenerate                   │
+│                                                                              │
+│ SQLite                                                                        │
+│  ├─ v1 tables unchanged                                                      │
+│  ├─ projects v2 additive columns                                             │
+│  └─ registration_candidates                                                  │
+│                                                                              │
+│ Registration worker                                                          │
+│  ├─ git init when required                                                   │
+│  ├─ gh repo view/create --private                                            │
+│  ├─ origin link                                                               │
+│  ├─ local commit -> initial push                                             │
+│  └─ initial attempt + exactly 1 retry after 2 sec -> failed candidate        │
+│                                                                              │
+│ Existing generation worker                                                   │
+│  ├─ post-commit -> Codex gpt-5.6-terra -> progress schema v1                 │
+│  └─ manual regenerate -> existing recovery pipeline                          │
+│                                                                              │
+│ Backup/restore                                                               │
+│  ├─ pre-push / registration / manual backup                                  │
+│  ├─ deterministic backup-v2 + SHA-256 manifest                               │
+│  └─ restore schema v1 or v2 into fresh DB, validate, then atomic replace     │
+└───────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### 各構成要素の責務
 
-- **Web UI**
-  - プロジェクト登録。
-  - 全プロジェクトの現在地・完了事項・次の作業・情報元リポジトリ・最終反映commit表示。
-  - プロジェクト詳細の重要判断・理由・根拠表示。
-  - 生成失敗・部分復元・バックアップ失敗の状態表示。
+- **Agent integration installer**
+  - `setup-agents` CLIでCodex/Claude Codeのユーザー設定へtracker entryを各1件だけ追加する。
+  - Codexの必須検知経路はtop-level `notify`。1 turn完了後に渡されるJSONの`cwd`を使う。
+  - Claude Codeの必須検知経路はuser-level `UserPromptSubmit` command hook。JSON stdinの`cwd`を使う。
+  - 既存設定を消さずにmergeする。競合時は後述の固定エラーとする。
+- **Agent event CLI**
+  - event payloadからagent種別・event type・`cwd`だけを使い、会話本文・prompt・transcriptを保存しない。
+  - `cwd`がGit配下なら`git rev-parse --show-toplevel`、Git外なら`cwd`をcanonical local pathとする。
+  - 既登録pathならno-op。未登録pathならcandidateをupsertする。
+  - 初回candidateでlocal serverをensureし、確認URLを既定ブラウザで開く。
+- **Registration worker**
+  - 承認後のGit初期化、GitHub repository作成/照合、remote、初回push、project登録を単一state machineとして実行する。
+  - 初回失敗時だけ2秒後に1回再試行し、2回目失敗後はcandidate=`failed`。
 - **Fastify API**
-  - UI用read/write API。
-  - 入力検証。
-  - ローカルホスト以外からのアクセス拒否。
-- **SQLite**
-  - ローカルの正本。
-  - 生成履歴、根拠、バックアップ実行状態を保持。
-- **Git hook管理**
-  - 登録済み各プロジェクトの`.git/hooks/post-commit`と`.git/hooks/pre-push`へ管理ブロックを追加。
-  - `core.hooksPath`が設定済みのrepositoryとlinked worktreeはMVP対象外として登録時に拒否する。
-  - 既存hookの先頭がshebangで始まる場合は内容を保持したまま追記。
-  - 既存hookが存在しshebangがない場合は登録を失敗させ、既存hookを変更しない。
+  - UI read/write API、入力検証、localhost境界、candidate/project操作。
+  - project一覧取得時にlocal HEADを取り直し、commit差分をDBへ同期して鮮度を算出する。
+- **Web UI**
+  - `2005x1271`で8件まで1画面比較できるdense listをdefaultにする。
+  - M2でcompact viewとkeyword searchを有効化する。
 - **Generation worker**
-  - commit単位でrunを1件だけ作成する。
-  - project単位のDB leaseでworkerを1プロセスに直列化し、queued runを`detected_at ASC, id ASC`で処理する。
-  - 対象プロジェクトに紐付いた1リポジトリだけから根拠を取得。
-  - Codex CLIへJSON Schema制約付きで生成依頼。
-  - 4必須項目の形式・根拠IDを検証。
-- **Recovery**
-  - 進捗欠落時に最新commitと取得可能なGitHub根拠から再生成。
-  - 全4項目confirmedなら`complete`。
-  - 1〜3項目confirmedなら`partial`。
-  - 0項目confirmedなら`unrecoverable`。
-- **Backup**
-  - 全登録プロジェクトの対応関係、commit、根拠、generation run、progress snapshotを1つの決定的JSONへexport。
-  - 専用Private repositoryへ保存。
-- **Restore**
-  - バックアップを検証後、新しいDBへ全件import。
-  - import完了後にDBをatomic replace。
-  - `worker_leases`は復元対象外で、復元後は空から開始。
-- **外部CLI**
-  - `gh`: GitHub認証・repository/Issue/PR操作。
-  - `codex`: ChatGPT認証済みCLIによる生成。
-  - API keyを標準経路として使用しない。
+  - v1.3の共通進捗形式に加え、commit `c281f91` / DESIGN v1.7のprompt固定契約と`validateProgressOutput`正規化規則を変更しない。
+  - `regenerate`は既存recovery経路へ`manual_recovery`としてqueueする。
+  - 根拠不足のreal recoveryでもschema-validな`needs_input` snapshotを残し、軽微な形式揺れだけを理由にrun全体を`CODEX_OUTPUT_INVALID`へ落とさない。
+- **Backup/Restore**
+  - production writeはbackup schema v2。
+  - restoreはv1/v2両方を受け付ける。
+  - `unreflected`はderived値なので保存せず、`commits`と`progress_snapshots`から復元後に再計算する。
 
----
+### Codex user integration 固定仕様
+
+対象: `~/.codex/config.toml` のtop-level `notify`。
+
+1. `smol-toml`で既存TOMLをparseし、文法が壊れていれば無変更で`INVALID_AGENT_CONFIG`。
+2. `notify`未設定なら、最初のtable headerより前へmanaged blockを挿入する。既存文字列・コメント・table順は変更しない。
+3. tracker managed blockが存在しargvが一致すればno-op。
+4. 別の`notify`が存在する場合は **`CODEX_NOTIFY_CONFLICT`**。既存値を上書きしない。
+5. managed blockにはsetup時点の `process.execPath` と `<repo>/dist/cli/index.js` の**絶対パス**を入れる。
+6. repository移動後は`doctor`が`AGENT_HOOK_PATH_STALE`を返し、`setup-agents --repair`でtracker managed blockだけ再生成する。
+7. notifyのJSONは末尾argvとして受け、`type=agent-turn-complete`以外は無視する。
+8. handler内部エラーでもCodex本体を失敗させずexit 0。redacted logへerror codeだけ記録する。
+
+```toml
+# >>> ai-dev-progress-tracker managed notify >>>
+notify = ["<absolute node executable>", "<absolute dist/cli/index.js>", "agent-event", "--agent", "codex", "--input", "argv"]
+# <<< ai-dev-progress-tracker managed notify <<<
+```
+
+### Claude Code user integration 固定仕様
+
+対象: `~/.claude/settings.json` の `hooks.UserPromptSubmit`。
+
+1. settingsがなければ新規作成。既存JSONはparseし、未知keyを保持してmergeする。
+2. `hooks.UserPromptSubmit`へtracker matcher groupを1件appendする。
+3. commandはsetup時点の絶対Node executable、argsは絶対`dist/cli/index.js`, `agent-event`, `--agent`, `claude`, `--input`, `stdin`。
+4. 同一entryがあればno-op。他hookは変更しない。
+5. `disableAllHooks=true`なら **`CLAUDE_HOOKS_DISABLED`** としてsetup失敗。元settingsは無変更。
+6. command timeoutは5秒。handlerはcandidate登録とprompt表示開始だけ行い、GitHub登録/AI生成を行わない。
+7. workspace trust完了後の最初の`UserPromptSubmit`で検知する。
+8. `claude auth status`はsetup必須条件ではないが、実機タスクでは認証済み実行を確認する。
 
 ## 2. 技術選定
 
-技術選定の理由は記載しない。npm packageは完全一致、Node.js/Git/gh/Codexは下記version constraintで固定する。
+lockfileで固定できるnpm依存だけを完全一致固定する。Node/npm/Git/gh/Codex/Claude Codeは最低versionのみ指定し、上限は設定しない。
 
 | レイヤ | 採用技術 | バージョン | 選定理由 | 却下した候補と理由 |
-|---|---|---:|---|---|
-| ランタイム | Node.js | `>=24.15.0 <25` | — | — |
-| パッケージ管理 | npm | `12.0.2`（完全一致） | — | — |
-| VCS CLI | Git | `>=2.45.0` | — | — |
-| 言語 | TypeScript | 7.0.2 | — | — |
-| HTTPフレームワーク | Fastify | 5.12.1 | — | — |
-| 静的配信 | @fastify/static | 10.1.3 | — | — |
-| UI | React | 19.2.8 | — | — |
-| UI DOM | react-dom | 19.2.8 | — | — |
-| ビルド | Vite | 8.2.2 | — | — |
-| React Vite plugin | @vitejs/plugin-react | 6.1.1 | — | — |
-| データストア | SQLite + better-sqlite3 | 13.0.3 | — | — |
-| スキーマ検証 | Zod | 4.5.4 | — | — |
-| Lint/Format | @biomejs/biome | 2.5.11 | — | — |
-| 単体/結合テスト | Vitest | 4.1.11 | — | — |
-| E2E | @playwright/test | 1.62.1 | — | — |
-| TS実行補助 | tsx | 4.23.13 | — | — |
-| React型 | @types/react | 19.2.18 | — | — |
-| React DOM型 | @types/react-dom | 19.2.5 | — | — |
-| Node型 | @types/node | 24.13.3 | — | — |
-| better-sqlite3型 | @types/better-sqlite3 | 9.6.0 | — | — |
-| GitHub連携 | GitHub CLI (`gh`) | `>=2.98.0` | — | — |
-| AI実行 | OpenAI Codex CLI | `>=0.146.0` | — | — |
-| AIモデル | GPT-5.6 Terra | `gpt-5.6-terra` | — | — |
-| CI checkout action | actions/checkout | 7.0.1 | — | — |
-| CI Node setup action | actions/setup-node | 7.0.0 | — | — |
-| 認証 | ローカルUI認証なし / GitHubはgh認証 / AIはCodex ChatGPT認証 | 固定 | — | — |
-| ホスティング | localhost | `127.0.0.1:4317` | — | — |
+|---|---|---|---|---|
+| ランタイム | Node.js | `>=24.15.0` | 既存v1.3実装と実測環境を維持し、server/CLI/workerを単一runtimeで動かせる | Python本体: 全面移植になりv1互換リスク。Bun/Deno: native moduleと既存CLIの再検証が増える |
+| package manager | npm | `>=12.0.2` | 実測済みで既存lockfile/allowScripts運用を継続 | pnpm/yarn: lockfileとinstall script許可モデルを変更する |
+| VCS CLI | Git | `>=2.45.0` | 既存hook/worktree/remote/push実装を維持 | libgit2等: 新native依存と認証経路を増やす |
+| 言語 | TypeScript | `7.0.2` | server/CLI/web/testを既存型システムで増分改修できる | JavaScript:型保証低下。Rust:全面移植 |
+| HTTP | Fastify | `5.12.1` | 既存localhost API/static配信を維持 | Express:移行価値なし。Electron IPC:配布/更新範囲が拡大 |
+| 静的配信 | `@fastify/static` | `10.1.3` | localhost serverからbuild済みweb assetを配信 | 別web server:常駐processが増える |
+| UI | React / react-dom | `19.2.8` / `19.2.8` | 既存componentを増分改修できる | Vue/Svelte:全面移植 |
+| Build | Vite / `@vitejs/plugin-react` | `8.2.2` / `6.1.1` | 既存build/E2E構成を維持 | webpack:設定増と移行コスト |
+| Data store | SQLite / `better-sqlite3` | `13.0.3` | 1ユーザー/1セッション、ローカル正本、backup exportに適合 | PostgreSQL:daemon/運用費。IndexedDB:CLI/worker共有困難 |
+| Validation | Zod | `4.5.4` | 既存API/AI境界を維持 | Ajv全面置換:既存Zod型を壊す |
+| TOML parse | `smol-toml` | `1.8.0` | Codex configの既存notifyを構文的に判定できる | regexのみ:TOML誤判定。全体stringify:コメント/format破壊 |
+| Lint/format | `@biomejs/biome` | `2.5.11` | 既存CIとLF規約を維持 | ESLint+Prettier:依存/設定増 |
+| Unit/Integration | Vitest | `4.1.11` | 既存test資産を再利用 | Jest:移行コストのみ |
+| E2E | `@playwright/test` | `1.62.1` | viewport/密度/操作の自動検証に適合 | Cypress:新依存とE2E移植が必要 |
+| TS script | `tsx` | `4.23.13` | eval/real-check scriptをTypeScriptで実行 | ts-node:移行価値なし |
+| 型 | `@types/node`, `@types/react`, `@types/react-dom`, `@types/better-sqlite3` | `24.13.3`, `19.2.18`, `19.2.5`, `9.6.0` | strict TypeScriptを維持 | 型なし運用:禁止 |
+| GitHub連携 | GitHub CLI | `>=2.98.0` | keyring認証を使いtokenをappへ保存せずPrivate repo操作可能 | Octokit+token:credential受渡しが必要 |
+| AI生成 | Codex CLI | `>=0.152.0` | 実測ChatGPT認証済みでv1.3生成モデルを維持 | OpenAI API直接:API key/従量課金。Claude生成:生成契約二重化 |
+| AI model | Codex `gpt-5.6-terra` | model id固定 | v1.3の既存生成契約 | 別model:fixture/品質再確定が必要 |
+| Claude検知 | Claude Code user hook | `>=2.1.258` | `UserPromptSubmit` stdinにcwdがあり追加credential不要 | transcript監視:内部形式依存。filesystem polling:agent開始との因果なし |
+| Codex検知 | Codex user `notify` | `>=0.152.0` | turn完了通知のcwdを利用でき、lifecycle hook trustをF1必須前提にしない | lifecycle hookのみ:trust待ち。session監視:private形式 |
+| 認証 | Web認証なし + 外部CLI credential store | 外部CLI下限に従う | localhost単独利用、秘密情報0件 | 独自OAuth/token store:不要 |
+| Hosting | localhost Fastify | `127.0.0.1:4317` | 常時公開不要、追加費用0円 | cloud hosting:scope外/追加費用 |
+| CI | GitHub Actions | repository既存workflow | 既存GitHub運用内で追加サービス不要 | 外部CI SaaS:新契約/費用可能性 |
 
-### package.json固定値
-
-実装時の`package.json`は以下の依存バージョンを**完全一致**で使用する。`^`、`~`は付けない。
+### npm dependency完全一致
 
 ```json
 {
-  "name": "ai-dev-progress-tracker",
-  "version": "1.0.0",
-  "private": true,
-  "type": "module",
-  "packageManager": "npm@12.0.2",
   "engines": {
-    "node": ">=24.15.0 <25",
-    "npm": "12.0.2"
-  },
-  "scripts": {
-    "dev": "npm run build:web && tsx watch src/server/index.ts",
-    "build": "npm run typecheck && npm run build:server && npm run build:web",
-    "build:server": "tsc -p tsconfig.server.json",
-    "build:web": "vite build",
-    "start": "node dist/server/index.js",
-    "cli": "node dist/cli/index.js",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "lint": "biome ci .",
-    "format": "biome check --write .",
-    "test": "vitest run",
-    "test:unit": "vitest run tests/unit",
-    "test:integration": "vitest run tests/integration",
-    "test:e2e": "playwright test",
-    "test:all": "npm run lint && npm run typecheck && npm test && npm run build && npm run test:e2e",
-    "eval:generation": "tsx scripts/eval-generation.ts",
-    "eval:recovery": "tsx scripts/eval-recovery.ts",
-    "verify:secrets": "tsx scripts/verify-no-secrets.ts"
+    "node": ">=24.15.0",
+    "npm": ">=12.0.2"
   },
   "dependencies": {
     "@fastify/static": "10.1.3",
@@ -257,11 +243,13 @@ source: PLAN.md v1.2 + 実機検証結果（2026-09-01）+ Windows実機不具�
     "fastify": "5.12.1",
     "react": "19.2.8",
     "react-dom": "19.2.8",
+    "smol-toml": "1.8.0",
     "zod": "4.5.4"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.11",
     "@playwright/test": "1.62.1",
+    "@types/better-sqlite3": "9.6.0",
     "@types/node": "24.13.3",
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.5",
@@ -269,8 +257,7 @@ source: PLAN.md v1.2 + 実機検証結果（2026-09-01）+ Windows実機不具�
     "tsx": "4.23.13",
     "typescript": "7.0.2",
     "vite": "8.2.2",
-    "vitest": "4.1.11",
-    "@types/better-sqlite3": "9.6.0"
+    "vitest": "4.1.11"
   },
   "allowScripts": {
     "esbuild@0.28.2": true,
@@ -279,80 +266,13 @@ source: PLAN.md v1.2 + 実機検証結果（2026-09-01）+ Windows実機不具�
 }
 ```
 
-`allowScripts`はnpm `12.0.2`が依存のinstall scriptを既定でblockするための許可リストである。
-`better-sqlite3`（採用DBドライバのnativeビルド）と`esbuild`（Vite build依存）のみを、レビュー済みバージョンにピンして許可する。
-新たな依存追加でinstall scriptが増えた場合は`npm install-scripts approve <pkg>`で同フィールドへ追記する。
-このフィールドはdependencies/devDependenciesのバージョン指定を変更しない。
-
-### 外部CLI・ランタイム要件
-
-server起動時および`doctor`で以下を検査する。Codex実行直前にはCodex CLI versionと認証を再検査する。
-
-```text
-process.versions.node             -> >=24.15.0 かつ <25.0.0
-git --version                     -> >=2.45.0
-gh --version                      -> >=2.98.0
-gh auth status --active --hostname github.com -> exit 0
-codex --version                   -> >=0.146.0
-codex login status               -> stderr/stdoutに "Logged in using ChatGPT" を含む
-```
-
-version比較は以下で固定する。
-
-1. version文字列から最初の`MAJOR.MINOR.PATCH`を正規表現`/(\d+)\.(\d+)\.(\d+)/`で抽出する。
-2. 抽出できない場合は`VERSION_PARSE_ERROR`で失敗する。
-3. prerelease/build metadataが後続していても、MVPでは抽出した3整数だけを比較する。
-4. `[major, minor, patch]`を左から整数比較する。
-5. Node.jsは`>=24.15.0`かつ`<25.0.0`を満たす場合だけ合格。
-6. Gitは`>=2.45.0`、ghは`>=2.98.0`、Codexは`>=0.146.0`を満たす場合だけ合格。
-7. 上限はNode.jsだけに設定する。Git/gh/Codexは上位versionを許容する。
-8. version比較用の追加npm packageは導入しない。`src/server/config.ts`にpure functionとして実装し、server起動時・doctor・Codex adapterから共有する。
-
-最低version未満の場合のerror code:
-
-```text
-Node.js -> NODE_VERSION_UNSUPPORTED
-Git     -> GIT_VERSION_UNSUPPORTED
-gh      -> GH_VERSION_UNSUPPORTED
-Codex   -> CODEX_VERSION_UNSUPPORTED
-```
-
-Codex実行直前検査は、以下を区別する。
-
-```text
-CODEX_VERSION_CHECK_FAILED -> `codex --version` を実行できなかった（spawn失敗 / timeout / 非0終了）
-VERSION_PARSE_ERROR        -> 実行できたが出力から MAJOR.MINOR.PATCH を抽出できない
-CODEX_VERSION_UNSUPPORTED  -> versionを抽出できたが `>=0.146.0` を満たさない
-CODEX_AUTH_CHECK_FAILED    -> `codex login status` を実行できなかった（spawn失敗 / timeout）
-AI_AUTH_NOT_CHATGPT        -> ChatGPT認証ではない（API key認証）
-CODEX_AUTH_REQUIRED        -> 未ログイン
-```
-
-`codex login status`がAPI key認証を示す場合は`AI_AUTH_NOT_CHATGPT`として標準経路を停止する。
-
-### 外部CLIのプロセス起動（全OS共通）
-
-外部CLI（`git` / `gh` / `codex`）は共通の process runner から起動し、shellは介さない（`spawn` の `shell:false`）。
-Windowsでは `spawn(shell:false)` が `.cmd` / `.bat` を直接起動できない（Node CVE-2024-27980対応）ため、process runnerが次を行う。
-
-1. コマンドが素の名前（パス区切り・拡張子なし）なら `PATH` × `PATHEXT` から実体を解決する。
-2. 実体が `.exe` / `.com` なら解決した絶対パスを直接 `spawn` する。
-3. 実体が `.cmd` / `.bat`（npm等が作るshim）なら `%ComSpec% /d /s /c "<実体> <エスケープ済み引数>"` を `windowsVerbatimArguments:true` で `spawn` する（cmd.exe自体は `.exe` なので `shell:false` のまま起動できる）。引数エスケープはcross-spawn相当。
-4. 解決できなければ従来どおり `spawn` に委ね、`error` イベントで失敗させる。
-
-非Windowsでは従来どおりコマンド名をそのまま `spawn` する。
-
-### 対応OS
-
-- Windows 11 24H2以降 + Git for Windows
-- macOS 14以降
-- Ubuntu 24.04 LTS以降
-
----
+- `packageManager`の完全一致指定は削除する。
+- `.nvmrc`は削除する。Node本体を完全一致固定しない。
+- CIは互換下限を検証するためNode `24.15.0`を使うが、製品のNode上限は設定しない。
 
 ## 3. ディレクトリ構成
 
-プロジェクトルートからの予定ファイルを全て記載する。
+v2.0完成時に許可するリポジトリ構成。実行時生成物 `dist/`, `node_modules/`, `<TRACKER_DATA_DIR>/` は除く。
 
 ```text
 ai-dev-progress-tracker/
@@ -361,30 +281,42 @@ ai-dev-progress-tracker/
 │       └── ci.yml
 ├── db/
 │   └── migrations/
-│       └── 001_init.sql
+│       ├── 001_init.sql
+│       └── 002_v2.sql
 ├── schemas/
 │   ├── backup-v1.schema.json
+│   ├── backup-v2.schema.json
 │   └── progress-output.schema.json
 ├── scripts/
 │   ├── eval-generation.ts
 │   ├── eval-recovery.ts
+│   ├── eval-ui-performance.ts
+│   ├── real-check-backup-restore.ts
+│   ├── real-check-codex-detection.ts
+│   ├── real-check-claude-detection.ts
+│   ├── real-check-github-registration.ts
+│   ├── real-check-regeneration.ts
 │   └── verify-no-secrets.ts
 ├── src/
 │   ├── cli/
 │   │   ├── commands/
+│   │   │   ├── agent-event.ts
 │   │   │   ├── doctor.ts
 │   │   │   ├── hook-backup.ts
 │   │   │   ├── hook-commit.ts
-│   │   │   └── restore.ts
+│   │   │   ├── restore.ts
+│   │   │   └── setup-agents.ts
 │   │   └── index.ts
 │   ├── server/
 │   │   ├── adapters/
 │   │   │   ├── codex.ts
+│   │   │   ├── desktop.ts
 │   │   │   ├── git.ts
 │   │   │   ├── github.ts
 │   │   │   └── process-runner.ts
 │   │   ├── db/
 │   │   │   ├── backup-repository.ts
+│   │   │   ├── candidate-repository.ts
 │   │   │   ├── connection.ts
 │   │   │   ├── lease-repository.ts
 │   │   │   ├── migrations.ts
@@ -393,21 +325,26 @@ ai-dev-progress-tracker/
 │   │   │   └── run-repository.ts
 │   │   ├── routes/
 │   │   │   ├── backup.ts
+│   │   │   ├── candidates.ts
 │   │   │   ├── health.ts
 │   │   │   ├── projects.ts
 │   │   │   └── system.ts
 │   │   ├── schemas/
 │   │   │   ├── backup.ts
+│   │   │   ├── candidate.ts
 │   │   │   ├── progress.ts
 │   │   │   └── project.ts
 │   │   ├── security/
 │   │   │   └── redaction.ts
 │   │   ├── services/
+│   │   │   ├── agent-integration-service.ts
 │   │   │   ├── backup-service.ts
+│   │   │   ├── freshness-service.ts
 │   │   │   ├── generation-service.ts
 │   │   │   ├── hook-service.ts
 │   │   │   ├── project-service.ts
 │   │   │   ├── recovery-service.ts
+│   │   │   ├── registration-service.ts
 │   │   │   └── restore-service.ts
 │   │   ├── app.ts
 │   │   ├── config.ts
@@ -420,10 +357,17 @@ ai-dev-progress-tracker/
 │   │   ├── api/
 │   │   │   └── client.ts
 │   │   ├── components/
+│   │   │   ├── CompactProjectCard.tsx
+│   │   │   ├── DashboardToolbar.tsx
+│   │   │   ├── DenseProjectRow.tsx
 │   │   │   ├── EvidenceList.tsx
+│   │   │   ├── ProgressHistory.tsx
 │   │   │   ├── ProgressSection.tsx
 │   │   │   ├── ProjectCard.tsx
 │   │   │   ├── RegisterProjectForm.tsx
+│   │   │   ├── RegistrationCandidatePanel.tsx
+│   │   │   ├── RegistrationPrompt.tsx
+│   │   │   ├── ReviewControls.tsx
 │   │   │   └── StatusBanner.tsx
 │   │   ├── pages/
 │   │   │   ├── DashboardPage.tsx
@@ -434,7 +378,8 @@ ai-dev-progress-tracker/
 │   └── worker/
 │       ├── backup-worker.ts
 │       ├── generation-worker.ts
-│       └── index.ts
+│       ├── index.ts
+│       └── registration-worker.ts
 ├── tests/
 │   ├── e2e/
 │   │   ├── dashboard.spec.ts
@@ -442,23 +387,36 @@ ai-dev-progress-tracker/
 │   │   └── registration.spec.ts
 │   ├── fixtures/
 │   │   ├── generation-cases.json
-│   │   └── recovery-cases.json
+│   │   ├── recovery-cases.json
+│   │   ├── ui-performance-observed.json
+│   │   └── v1-compat/
+│   │       ├── 001_init.sql
+│   │       ├── backup-v1.schema.json
+│   │       └── progress-output.schema.json
 │   ├── helpers/
 │   │   ├── fake-codex.ts
 │   │   ├── fake-gh.ts
 │   │   ├── temp-repo.ts
 │   │   └── test-db.ts
 │   ├── integration/
+│   │   ├── agent-detection.test.ts
 │   │   ├── backup-flow.test.ts
-│   │   ├── commit-generation-flow.test.ts
+│   │   ├── backup-v2.test.ts
+│   │   ├── commit-generation.test.ts
+│   │   ├── dashboard-freshness.test.ts
 │   │   ├── db-migrations.test.ts
 │   │   ├── project-registration.test.ts
+│   │   ├── registration-retry.test.ts
 │   │   ├── recovery-flow.test.ts
-│   │   └── restore-flow.test.ts
+│   │   ├── restore-flow.test.ts
+│   │   └── review-regeneration.test.ts
 │   └── unit/
+│       ├── agent-integration.test.ts
 │       ├── backup-export.test.ts
+│       ├── candidate-repository.test.ts
 │       ├── codex-adapter.test.ts
 │       ├── evidence-validation.test.ts
+│       ├── freshness.test.ts
 │       ├── git-adapter.test.ts
 │       ├── github-adapter.test.ts
 │       ├── hook-service.test.ts
@@ -466,11 +424,11 @@ ai-dev-progress-tracker/
 │       ├── progress-schema.test.ts
 │       ├── recovery-classifier.test.ts
 │       ├── redaction.test.ts
+│       ├── registration-service.test.ts
 │       └── smoke.test.ts
 ├── .env.example
 ├── .gitattributes
 ├── .gitignore
-├── .nvmrc
 ├── AGENTS.md
 ├── CLAUDE.md
 ├── DESIGN.md
@@ -484,25 +442,10 @@ ai-dev-progress-tracker/
 ├── playwright.config.ts
 ├── tsconfig.json
 ├── tsconfig.server.json
+├── tsconfig.web.json
 ├── vite.config.ts
 └── vitest.config.ts
 ```
-
-### アプリデータ配置
-
-デフォルト:
-
-```text
-~/.ai-dev-progress-tracker/
-├── tracker.db
-├── logs/
-│   └── app.log
-└── backup-repo/
-```
-
-テスト時のみ`TRACKER_DATA_DIR`で変更可能。
-
----
 
 ## 4. データモデル
 
@@ -510,1027 +453,633 @@ ai-dev-progress-tracker/
 
 | エンティティ | フィールド | 型 | 必須 | 制約 | 説明 |
 |---|---|---|---|---|---|
-| projects | id | TEXT | Yes | UUID, PK | アプリ内project ID |
-| projects | name | TEXT | Yes | 1〜120文字 | 表示名 |
-| projects | local_path | TEXT | Yes | canonical realpath, UNIQUE | Git root |
-| projects | repo_node_id | TEXT | Yes | UNIQUE | GitHub repository ID |
-| projects | repo_owner | TEXT | Yes | GitHub owner | repository owner |
-| projects | repo_name | TEXT | Yes | GitHub name | repository name |
-| projects | repo_url | TEXT | Yes | `https://github.com/...` | canonical URL |
-| projects | default_branch | TEXT | Yes | 非空 | GitHub default branch |
-| projects | status | TEXT | Yes | active/local_missing | ローカル可用状態 |
-| commits | project_id | TEXT | Yes | FK | project |
-| commits | sha | TEXT | Yes | 40/64 hex, composite PK | commit |
-| commits | parent_sha | TEXT | No | hex | 親commit |
-| commits | message | TEXT | Yes | | commit subject/body |
-| commits | authored_at | TEXT | Yes | ISO-8601 UTC | commit時刻 |
-| commits | detected_at | TEXT | Yes | ISO-8601 UTC | hook検知時刻 |
-| evidence | id | TEXT | Yes | UUID, PK | 根拠ID |
-| evidence | project_id | TEXT | Yes | FK | project |
-| evidence | kind | TEXT | Yes | commit/issue/pull_request | 根拠種別 |
-| evidence | external_key | TEXT | Yes | | SHAまたは番号 |
-| evidence | source_version | TEXT | Yes | | SHAまたはupdatedAt |
-| evidence | title | TEXT | Yes | | 表示タイトル |
-| evidence | url | TEXT | No | | GitHub URL |
-| evidence | payload_json | TEXT | Yes | valid JSON | 生成入力に使った正規化payload |
-| generation_runs | id | TEXT | Yes | UUID, PK | 生成実行ID |
-| generation_runs | dedupe_key | TEXT | Yes | UNIQUE | `generation:<project>:<sha>`等 |
-| generation_runs | project_id | TEXT | Yes | FK | project |
-| generation_runs | commit_sha | TEXT | Yes | FK | 対象commit |
-| generation_runs | mode | TEXT | Yes | generation/recovery | 処理種別 |
-| generation_runs | trigger | TEXT | Yes | post_commit/registration/manual_recovery | 契機 |
-| generation_runs | status | TEXT | Yes | queued/running/succeeded/partial/unrecoverable/failed | 状態 |
-| generation_runs | error_code | TEXT | No | | 機械判定用 |
-| generation_runs | error_message | TEXT | No | secret-redacted | 表示用 |
-| run_evidence | run_id | TEXT | Yes | FK | generation run |
-| run_evidence | evidence_id | TEXT | Yes | FK | evidence |
-| progress_snapshots | id | TEXT | Yes | UUID, PK | snapshot |
-| progress_snapshots | generation_run_id | TEXT | Yes | UNIQUE, FK | run |
-| progress_snapshots | project_id | TEXT | Yes | FK | project |
-| progress_snapshots | commit_sha | TEXT | Yes | FK | 最後に反映したcommit |
-| progress_snapshots | recovery_status | TEXT | Yes | complete/partial/unrecoverable | 4項目判定 |
-| progress_snapshots | current_position_json | TEXT | Yes | valid JSON | 現在地Field |
-| progress_snapshots | completed_items_json | TEXT | Yes | valid JSON | 完了事項Field |
-| progress_snapshots | next_actions_json | TEXT | Yes | valid JSON | 次の作業Field |
-| progress_snapshots | decisions_json | TEXT | Yes | valid JSON | 判断事項Field |
-| backup_runs | id | TEXT | Yes | UUID, PK | backup実行ID |
-| backup_runs | trigger | TEXT | Yes | registration/pre_push/manual | 契機 |
-| backup_runs | project_id | TEXT | No | FK | push元project |
-| backup_runs | source_commit_sha | TEXT | No | | push時HEAD |
-| backup_runs | status | TEXT | Yes | queued/running/succeeded/failed | 状態 |
-| backup_runs | backup_repo | TEXT | Yes | `owner/name` | backup先 |
-| backup_runs | backup_commit_sha | TEXT | No | | 成功時のbackup repo commit |
-| backup_runs | error_code | TEXT | No | | 機械判定用 |
-| backup_runs | error_message | TEXT | No | redacted | 表示用 |
-| worker_leases | scope | TEXT | Yes | PK | `generation:<project-id>`または`backup` |
-| worker_leases | owner_token | TEXT | Yes | UUID | worker所有token |
-| worker_leases | heartbeat_at | TEXT | Yes | ISO-8601 UTC | lease heartbeat |
+| Project | `id` | TEXT UUID | yes | PK | v1維持 |
+| Project | `name` | TEXT | yes | 1..120 | 表示名 |
+| Project | `local_path` | TEXT | yes | UNIQUE, absolute | canonical local path |
+| Project | `repo_node_id` | TEXT | yes | UNIQUE | GitHub immutable node id |
+| Project | `repo_owner`,`repo_name`,`repo_url` | TEXT | yes | GitHub repo | v1維持 |
+| Project | `default_branch` | TEXT | yes | non-empty | GitHub default branch |
+| Project | `status` | TEXT | yes | `active`,`local_missing` | v1維持 |
+| Project | `summary` | TEXT | yes | <=240 | v2概要 |
+| Project | `registration_source` | TEXT | yes | `manual`,`codex`,`claude` | 登録入口 |
+| Project | `review_required` | INTEGER | yes | 0/1 | 要確認 |
+| Project | `review_required_at` | TEXT | no | RFC3339 UTC | 要確認設定時刻 |
+| RegistrationCandidate | `id` | TEXT UUID | yes | PK | candidate ID |
+| RegistrationCandidate | `local_path` | TEXT | yes | UNIQUE absolute | 未登録project root |
+| RegistrationCandidate | `agent` | TEXT | yes | `codex`,`claude` | 初回検知agent |
+| RegistrationCandidate | `status` | TEXT | yes | state enum | `detected`,`prompted`,`declined`,`registering`,`failed`,`registered` |
+| RegistrationCandidate | `suggested_name` | TEXT | yes | 1..120 | folder basename由来 |
+| RegistrationCandidate | `detected_at`,`last_seen_at` | TEXT | yes | RFC3339 UTC | 初回/最終event |
+| RegistrationCandidate | `prompted_at`,`decision_at` | TEXT | no | RFC3339 UTC | UI提示/判断 |
+| RegistrationCandidate | `attempt_count` | INTEGER | yes | 0..2 | registration attempts |
+| RegistrationCandidate | `last_error_code` | TEXT | no | <=64 | 最終known error |
+| RegistrationCandidate | `last_error_message` | TEXT | no | <=500, redacted | 最終error |
+| RegistrationCandidate | `project_id` | TEXT UUID | no | FK projects | registered時のみ |
+| Commit | v1列 | existing | existing | `001_init.sql` | HEAD比較 |
+| ProgressSnapshot | v1列 | existing | existing | `001_init.sql` | `commit_sha`=生成commit、`created_at`=生成日時 |
+| GenerationRun | v1列 | existing | existing | `001_init.sql` | commit/manual recovery |
+| BackupRun | v1列 | existing | existing | `001_init.sql` | backup状態 |
 
-### 共通進捗情報の固定形式
+### 派生値
 
-`progress-output.schema.json`とZod schemaは同じ意味を持たせる。
+- `lastGeneratedCommitSha` = 最新採用`progress_snapshots.commit_sha`。snapshotなし=`null`。
+- `lastGeneratedAt` = 同snapshotの`created_at`。snapshotなし=`null`。
+- `latestCommitSha` = local repo HEAD。HEADなし=`null`。
+- `unreflected`:
+  - `latestCommitSha=null` → `false`
+  - `latestCommitSha!=null && lastGeneratedCommitSha=null` → `true`
+  - 両方あり不一致 → `true`
+  - 一致 → `false`
+- `hasNextAction` = 最新snapshot `nextActions.status=confirmed` かつ `items.length>0`。
+- `lastUpdatedAt` = `max(projects.updated_at, latest commits.detected_at, latest progress_snapshots.created_at, review_required_at)`。backup時刻は含めない。
+- snapshotなし:
+  - HEADなし: current=`初回コミット待ち`, next=`[]`
+  - HEADあり: current=`進捗生成待ち`, next=`[]`
+- summary登録時:
+  1. GitHub descriptionのtrim結果が非空なら先頭240文字。
+  2. なければREADMEの最初のheading以外の非空paragraphを空白正規化して先頭240文字。
+  3. なければproject name。
 
-```json
-{
-  "schemaVersion": 1,
-  "currentPosition": {
-    "status": "confirmed",
-    "text": "現在地の要約",
-    "evidenceIds": ["ev_..."]
-  },
-  "completedItems": {
-    "status": "confirmed",
-    "items": [
-      {
-        "text": "完了事項",
-        "evidenceIds": ["ev_..."]
-      }
-    ],
-    "evidenceIds": ["ev_..."]
-  },
-  "nextActions": {
-    "status": "confirmed",
-    "items": [
-      {
-        "text": "次の作業",
-        "evidenceIds": ["ev_..."]
-      }
-    ],
-    "evidenceIds": ["ev_..."]
-  },
-  "importantDecisions": {
-    "status": "confirmed",
-    "items": [
-      {
-        "decision": "判断事項",
-        "rationale": "判断理由",
-        "evidenceIds": ["ev_..."]
-      }
-    ],
-    "evidenceIds": ["ev_..."]
-  }
-}
-```
+### GitHub repository名正規化
 
-各4フィールドの`status`は`confirmed | needs_input`のみ。
-
-- `confirmed`
-  - field-level `evidenceIds`は1件以上。
-  - 各itemの`evidenceIds`も1件以上。
-  - 全evidence IDが当該runの`run_evidence`に存在する。
-- `needs_input`
-  - text型は`"要補完"`。
-  - list型は`items: []`。
-  - `evidenceIds: []`。
-- evidenceに存在しないIDを1つでも返した場合はAI出力全体を不正として`failed`。
-- `completedItems`と`nextActions`を`confirmed`にする場合、`items`は1件以上。
-- `importantDecisions`は、入力根拠から「重要な判断事項なし」と確認できる場合に限り`status:"confirmed", items:[], evidenceIds:[...]`を許可する。UIはこの状態を「重要な判断事項: なし」と表示する。
-- 判断事項の有無自体を根拠から確定できない場合は`importantDecisions.status="needs_input"`とする。
-
-### 復元結果の機械判定
-
-```text
-confirmed field数 = 4 -> complete
-confirmed field数 = 1..3 -> partial
-confirmed field数 = 0 -> unrecoverable
-```
+1. Unicode NFKC。
+2. trim。
+3. ASCII英字をlowercase。
+4. whitespace連続を`-`。
+5. `[a-z0-9._-]`以外を`-`。
+6. `-`連続を1文字へ。
+7. 先頭末尾の`.`/`-`除去。
+8. 100文字でtruncate後、再度先頭末尾`.`/`-`除去。
+9. 空なら `project-<candidate UUID先頭8hex>`。
+10. 同ownerに同名repoがありcandidateのoriginと一致しなければsuffix生成せず`REPOSITORY_NAME_CONFLICT`。
 
 ### リレーション
 
-- projects 1:N commits
-- projects 1:N evidence
-- projects 1:N generation_runs
-- generation_runs N:M evidence (`run_evidence`)
-- generation_runs 1:0..1 progress_snapshots
-- projects 1:N progress_snapshots
-- projects 1:N backup_runs
+- v1リレーションは0.3のまま。
+- `projects 1:N registration_candidates`。
+- `local_path`はcandidate/projectそれぞれ一意。
+- registered candidateも監査/backupのため削除しない。
 
 ### 具体スキーマ
 
-`db/migrations/001_init.sql`は以下とする。
+`db/migrations/001_init.sql` は既存ファイルを変更しない。
+
+`db/migrations/002_v2.sql`:
 
 ```sql
 PRAGMA foreign_keys = ON;
-PRAGMA journal_mode = WAL;
-PRAGMA synchronous = FULL;
 
-CREATE TABLE IF NOT EXISTS schema_migrations (
-  version INTEGER PRIMARY KEY,
-  applied_at TEXT NOT NULL
-) STRICT;
+ALTER TABLE projects
+  ADD COLUMN summary TEXT NOT NULL DEFAULT ''
+  CHECK(length(summary) <= 240);
 
-CREATE TABLE projects (
+ALTER TABLE projects
+  ADD COLUMN registration_source TEXT NOT NULL DEFAULT 'manual'
+  CHECK(registration_source IN ('manual', 'codex', 'claude'));
+
+ALTER TABLE projects
+  ADD COLUMN review_required INTEGER NOT NULL DEFAULT 0
+  CHECK(review_required IN (0, 1));
+
+ALTER TABLE projects
+  ADD COLUMN review_required_at TEXT;
+
+UPDATE projects
+SET summary = name
+WHERE summary = '';
+
+CREATE TABLE registration_candidates (
   id TEXT PRIMARY KEY,
-  name TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 120),
   local_path TEXT NOT NULL UNIQUE,
-  repo_node_id TEXT NOT NULL UNIQUE,
-  repo_owner TEXT NOT NULL,
-  repo_name TEXT NOT NULL,
-  repo_url TEXT NOT NULL,
-  default_branch TEXT NOT NULL,
-  status TEXT NOT NULL CHECK(status IN ('active', 'local_missing')),
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-) STRICT;
-
-CREATE TABLE commits (
-  project_id TEXT NOT NULL,
-  sha TEXT NOT NULL,
-  parent_sha TEXT,
-  message TEXT NOT NULL,
-  authored_at TEXT NOT NULL,
+  agent TEXT NOT NULL CHECK(agent IN ('codex', 'claude')),
+  status TEXT NOT NULL
+    CHECK(status IN ('detected', 'prompted', 'declined', 'registering', 'failed', 'registered')),
+  suggested_name TEXT NOT NULL CHECK(length(suggested_name) BETWEEN 1 AND 120),
   detected_at TEXT NOT NULL,
-  PRIMARY KEY(project_id, sha),
-  FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
-) STRICT;
-
-CREATE TABLE evidence (
-  id TEXT PRIMARY KEY,
-  project_id TEXT NOT NULL,
-  kind TEXT NOT NULL CHECK(kind IN ('commit', 'issue', 'pull_request')),
-  external_key TEXT NOT NULL,
-  source_version TEXT NOT NULL,
-  title TEXT NOT NULL,
-  url TEXT,
-  payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),
-  captured_at TEXT NOT NULL,
-  UNIQUE(project_id, kind, external_key, source_version),
-  FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
-) STRICT;
-
-CREATE TABLE generation_runs (
-  id TEXT PRIMARY KEY,
-  dedupe_key TEXT NOT NULL UNIQUE,
-  project_id TEXT NOT NULL,
-  commit_sha TEXT NOT NULL,
-  mode TEXT NOT NULL CHECK(mode IN ('generation', 'recovery')),
-  trigger TEXT NOT NULL CHECK(trigger IN ('post_commit', 'registration', 'manual_recovery')),
-  status TEXT NOT NULL CHECK(status IN ('queued', 'running', 'succeeded', 'partial', 'unrecoverable', 'failed')),
-  detected_at TEXT NOT NULL,
-  started_at TEXT,
-  finished_at TEXT,
-  ai_provider TEXT NOT NULL DEFAULT 'codex_cli',
-  ai_cli_version TEXT,
-  ai_model TEXT NOT NULL DEFAULT 'gpt-5.6-terra',
-  error_code TEXT,
-  error_message TEXT,
-  FOREIGN KEY(project_id, commit_sha) REFERENCES commits(project_id, sha) ON DELETE CASCADE
-) STRICT;
-
-CREATE TABLE run_evidence (
-  run_id TEXT NOT NULL,
-  evidence_id TEXT NOT NULL,
-  PRIMARY KEY(run_id, evidence_id),
-  FOREIGN KEY(run_id) REFERENCES generation_runs(id) ON DELETE CASCADE,
-  FOREIGN KEY(evidence_id) REFERENCES evidence(id) ON DELETE CASCADE
-) STRICT;
-
-CREATE TABLE progress_snapshots (
-  id TEXT PRIMARY KEY,
-  generation_run_id TEXT NOT NULL UNIQUE,
-  project_id TEXT NOT NULL,
-  commit_sha TEXT NOT NULL,
-  recovery_status TEXT NOT NULL CHECK(recovery_status IN ('complete', 'partial', 'unrecoverable')),
-  current_position_json TEXT NOT NULL CHECK(json_valid(current_position_json)),
-  completed_items_json TEXT NOT NULL CHECK(json_valid(completed_items_json)),
-  next_actions_json TEXT NOT NULL CHECK(json_valid(next_actions_json)),
-  decisions_json TEXT NOT NULL CHECK(json_valid(decisions_json)),
-  created_at TEXT NOT NULL,
-  FOREIGN KEY(generation_run_id) REFERENCES generation_runs(id) ON DELETE CASCADE,
-  FOREIGN KEY(project_id, commit_sha) REFERENCES commits(project_id, sha) ON DELETE CASCADE
-) STRICT;
-
-CREATE TABLE backup_runs (
-  id TEXT PRIMARY KEY,
-  trigger TEXT NOT NULL CHECK(trigger IN ('registration', 'pre_push', 'manual')),
+  last_seen_at TEXT NOT NULL,
+  prompted_at TEXT,
+  decision_at TEXT,
+  attempt_count INTEGER NOT NULL DEFAULT 0
+    CHECK(attempt_count BETWEEN 0 AND 2),
+  last_error_code TEXT CHECK(last_error_code IS NULL OR length(last_error_code) <= 64),
+  last_error_message TEXT CHECK(last_error_message IS NULL OR length(last_error_message) <= 500),
   project_id TEXT,
-  source_commit_sha TEXT,
-  status TEXT NOT NULL CHECK(status IN ('queued', 'running', 'succeeded', 'failed')),
-  backup_repo TEXT NOT NULL,
-  backup_commit_sha TEXT,
-  queued_at TEXT NOT NULL,
-  started_at TEXT,
-  finished_at TEXT,
-  error_code TEXT,
-  error_message TEXT,
   FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE SET NULL
 ) STRICT;
 
-CREATE TABLE worker_leases (
-  scope TEXT PRIMARY KEY,
-  owner_token TEXT NOT NULL,
-  heartbeat_at TEXT NOT NULL
-) STRICT;
-
-CREATE INDEX idx_generation_runs_project_status
-  ON generation_runs(project_id, status, detected_at DESC);
-
-CREATE INDEX idx_progress_snapshots_project_created
-  ON progress_snapshots(project_id, created_at DESC);
-
-CREATE INDEX idx_evidence_project_kind
-  ON evidence(project_id, kind, captured_at DESC);
-
-CREATE INDEX idx_backup_runs_status_queued
-  ON backup_runs(status, queued_at DESC);
+CREATE INDEX idx_registration_candidates_status_seen
+  ON registration_candidates(status, last_seen_at DESC);
 
 INSERT INTO schema_migrations(version, applied_at)
-VALUES (1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+VALUES (2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
 ```
 
----
+Migration invariant:
+- v1 DB適用後、既存projectは`summary=name`, `registration_source=manual`, `review_required=0`。
+- migration runnerのtransaction内で1回だけ適用し、`schema_migrations.version=2`なら再実行しない。
+- migration前にDBを `tracker.db.pre-v2-<UTC timestamp>` へ1 copyし、自動削除しない。
+
+### backup-v2論理schema
+
+`schemas/backup-v1.schema.json`は変更しない。新規`schemas/backup-v2.schema.json`は次のshapeを固定する。
+
+```text
+root:
+  schemaVersion: const 2
+  exportedAt: RFC3339 UTC string
+  projects: ProjectBackupV2[]
+  commits: v1 CommitBackup[]
+  evidence: v1 EvidenceBackup[]
+  generationRuns: v1 GenerationRunBackup[]
+  runEvidence: v1 RunEvidenceBackup[]
+  progressSnapshots: v1 ProgressSnapshotBackup[]
+  registrationCandidates: RegistrationCandidateBackupV2[]
+
+ProjectBackupV2:
+  v1 project fields
+  + summary
+  + registrationSource
+  + reviewRequired
+  + reviewRequiredAt
+
+RegistrationCandidateBackupV2:
+  id
+  localPath
+  agent
+  status
+  suggestedName
+  detectedAt
+  lastSeenAt
+  promptedAt
+  decisionAt
+  attemptCount
+  lastErrorCode
+  lastErrorMessage
+  projectId
+```
+
+- `backup_runs`, `worker_leases`, logs、agent payload、session/transcript、認証情報はbackupしない。
+- production v2 exportは`data/backup-v2.json`をactive manifest対象にする。
+- restoreはmanifest `schemaVersion=1`なら`backup-v1.json`、`2`なら`backup-v2.json`。
+- v1 restore後にmigration 002を適用。
+- `unreflected`は保存せず、restore後にcommit/snapshotから再計算しround-trip一致を検証する。
+
 
 ## 5. インターフェース仕様
 
-全APIは`127.0.0.1:4317`でのみlistenする。Base pathは`/api`。
+### HTTP API
+
+全pathはlocalhost HTTP。同一origin以外のmutationを拒否する。
 
 | メソッド | パス | 認証 | リクエスト | レスポンス | エラー |
 |---|---|---|---|---|---|
-| GET | `/api/health` | なし | なし | `{status:"ok", db:"ok"}` | 500 |
-| GET | `/api/projects` | なし | なし | `ProjectSummary[]` | 500 |
-| POST | `/api/projects` | なし | `{name,localPath,repository}` | `ProjectDetail` | 400/409/422/500 |
-| GET | `/api/projects/:id` | なし | なし | `ProjectDetail` | 404/500 |
-| POST | `/api/projects/:id/recover` | なし | `{}` | `{runId,status:"queued"}` | 404/409/422/500 |
-| POST | `/api/backup` | なし | `{}` | `{backupRunId,status:"queued"}` | 409/500 |
-| GET | `/api/system/status` | なし | なし | `SystemStatus` | 500 |
+| GET | `/api/health` | local only | なし | `{status:"ok"}` | 500 |
+| GET | `/api/projects` | local only | query `q?`, `states?` | `{projects: ProjectSummaryV2[]}` | 400,500 |
+| POST | `/api/projects` | local only | 既存manual register body | `ProjectDetailV2` | 400,409,422,500 |
+| GET | `/api/projects/:id` | local only | なし | `ProjectDetailV2` | 404,500 |
+| GET | `/api/projects/:id/history` | local only | `limit?` default20/max100, `before?` cursor | `{items,nextCursor}` | 400,404,500 |
+| PATCH | `/api/projects/:id/review` | local only | `{required:boolean}` | `{projectId,reviewRequired,reviewRequiredAt}` | 400,404,500 |
+| POST | `/api/projects/:id/recover` | local only | 空body | `{runId,status:"queued"}` | 404,409,422,500 |
+| POST | `/api/projects/:id/backup` | local only | 空body | `{backupRunId,status:"queued"}` | 404,409,422,500 |
+| GET | `/api/candidates` | local only | `status?` | `{candidates: RegistrationCandidate[]}` | 400,500 |
+| GET | `/api/candidates/:id` | local only | なし | `RegistrationCandidate` | 404,500 |
+| POST | `/api/candidates/:id/approve` | local only | `{name?:string}` | `{candidateId,status:"registering"}` 202 | 400,404,409,500 |
+| POST | `/api/candidates/:id/decline` | local only | 空body | `{candidateId,status:"declined"}` | 404,409,500 |
+| POST | `/api/candidates/:id/reopen` | local only | 空body | `{candidateId,status:"detected"}` | 404,409,500 |
+| GET | `/api/system/status` | local only | なし | version/auth/integration readiness。token/raw auth outputなし | 500 |
 
-### POST `/api/projects`
+### ProjectSummaryV2追加field
 
-Request:
-
-```json
-{
-  "name": "my-project",
-  "localPath": "/absolute/path/to/repo",
-  "repository": "owner/repo"
-}
+```ts
+type ProjectSummaryV2 = ProjectSummary & {
+  summary: string;
+  latestCommitSha: string | null;
+  lastGeneratedCommitSha: string | null;
+  lastGeneratedAt: string | null;
+  lastUpdatedAt: string;
+  unreflected: boolean;
+  reviewRequired: boolean;
+  hasNextAction: boolean;
+  registrationSource: "manual" | "codex" | "claude";
+};
 ```
 
-固定検証順:
+### 検索・絞り込み契約
 
-1. `localPath`を`realpath`化。
-2. `git -C <path> rev-parse --show-toplevel`が成功。
-3. 出力realpathと`localPath`が一致。
-4. `git -C <path> rev-parse --absolute-git-dir`のrealpathが`<localPath>/.git`のrealpathと一致する。linked worktreeは拒否。
-5. `git -C <path> config --get core.hooksPath`が値を返す場合は拒否。
-6. `git -C <path> remote get-url origin`を取得する。raw URLは永続化・log出力しない。
-7. originを`github.com/<owner>/<repo>`へ正規化。
-8. request `repository`と一致。
-9. `gh auth status --active --hostname github.com`が成功。
-10. `gh repo view owner/repo --json id,nameWithOwner,url,visibility,defaultBranchRef`が成功。
-11. 同じ`local_path`または`repo_node_id`が別projectへ登録済みなら409。
-12. DB保存。
-13. `post-commit`と`pre-push` hookを設置。
-14. 最新HEAD commitを登録。
-15. 進捗snapshotがないため`recovery` runを自動enqueue。
-16. backup repositoryをensureし、registration契機backupをenqueue。
-
-### ProjectSummary
-
-```json
-{
-  "id": "uuid",
-  "name": "my-project",
-  "repository": "owner/repo",
-  "repositoryUrl": "https://github.com/owner/repo",
-  "lastCommitSha": "40-char-sha",
-  "progressStatus": "complete",
-  "currentPosition": "string",
-  "completedItems": ["string"],
-  "nextActions": ["string"],
-  "generationStatus": "succeeded",
-  "backupStatus": "succeeded"
-}
-```
-
-### ProjectDetail
-
-ProjectSummaryに以下を追加する。
-
-```json
-{
-  "importantDecisions": [
-    {
-      "decision": "string",
-      "rationale": "string",
-      "evidence": [
-        {
-          "id": "uuid",
-          "kind": "commit",
-          "externalKey": "sha-or-number",
-          "title": "string",
-          "url": "https://github.com/..."
-        }
-      ]
-    }
-  ],
-  "allEvidence": [],
-  "missingFields": []
-}
-```
-
-### エラーレスポンス共通形式
-
-```json
-{
-  "error": {
-    "code": "PROJECT_NOT_FOUND",
-    "message": "Project not found."
-  }
-}
-```
-
-| ステータス | code | 発生条件 |
-|---:|---|---|
-| 400 | INVALID_REQUEST | Zod request validation失敗 |
-| 404 | PROJECT_NOT_FOUND | project IDなし |
-| 409 | PROJECT_ALREADY_REGISTERED | local pathまたはrepo_node_id重複 |
-| 409 | RUN_ALREADY_ACTIVE | 同projectのrecovery実行中 |
-| 409 | BACKUP_ALREADY_ACTIVE | backup実行中 |
-| 422 | NOT_GIT_ROOT | localPathがGit rootでない |
-| 422 | GIT_LAYOUT_UNSUPPORTED | linked worktreeまたは`.git`が標準directoryでない |
-| 422 | CUSTOM_HOOKS_PATH_UNSUPPORTED | `core.hooksPath`設定済み |
-| 422 | REPOSITORY_MISMATCH | originと入力repository不一致 |
-| 422 | GITHUB_AUTH_REQUIRED | gh認証なし |
-| 422 | HOOK_UNSUPPORTED | 既存hookがshebangなし |
-| 422 | NODE_VERSION_UNSUPPORTED | Node.jsが`>=24.15.0 <25`を満たさない |
-| 422 | GIT_VERSION_UNSUPPORTED | Gitが`>=2.45.0`を満たさない |
-| 422 | GH_VERSION_UNSUPPORTED | ghが`>=2.98.0`を満たさない |
-| 422 | CODEX_VERSION_UNSUPPORTED | Codex CLI versionを取得できたが`>=0.146.0`を満たさない |
-| 422 | CODEX_VERSION_CHECK_FAILED | `codex --version`を実行できない（spawn失敗 / timeout / 非0終了） |
-| 422 | VERSION_PARSE_ERROR | version文字列から`MAJOR.MINOR.PATCH`を抽出できない |
-| 422 | CODEX_AUTH_REQUIRED | Codex未ログイン |
-| 422 | CODEX_AUTH_CHECK_FAILED | `codex login status`を実行できない（spawn失敗 / timeout） |
-| 422 | AI_AUTH_NOT_CHATGPT | CodexがChatGPT認証でない |
-| 500 | INTERNAL_ERROR | その他 |
+- search: Unicode NFKC → lowercase → trim → whitespace split。
+- 空queryまたはtoken 0件は全project。
+- token間はAND。各tokenは次のnormalized textのいずれかへsubstring一致:
+  - project name
+  - summary
+  - `owner/repo`
+  - currentPosition text
+  - completedItems各text
+  - nextActions各text
+- state filter:
+  - `has_next_action`
+  - `needs_review`
+  - `unreflected`
+- state filter複数選択はOR、search条件とはAND。
+- filter/searchは8件中心のproject responseに対してclient-side処理する。
 
 ### CLI
 
 ```text
 node dist/cli/index.js doctor
+node dist/cli/index.js setup-agents
+node dist/cli/index.js setup-agents --repair
+node dist/cli/index.js setup-agents --uninstall
+node dist/cli/index.js agent-event --agent codex --input argv <json>
+node dist/cli/index.js agent-event --agent claude --input stdin
 node dist/cli/index.js hook-commit --project-id <uuid> --repo <path> --sha <sha>
 node dist/cli/index.js hook-backup --project-id <uuid> --repo <path> --sha <sha>
 node dist/cli/index.js restore
 node dist/cli/index.js restore --force
 ```
 
-- `hook-commit`: 2秒以内にqueue登録とworker spawnを完了してexit 0。
-- `hook-backup`: 2秒以内にqueue登録とworker spawnを完了してexit 0。
-- `restore`: 既存`tracker.db`がある場合はexit 2。
-- `restore --force`: 既存DBを`tracker.db.pre-restore-<timestamp>`へ退避して復元。
+`agent-event`:
+- Codex: `type=agent-turn-complete`以外はexit 0/no-op。
+- Claude: `hook_event_name=UserPromptSubmit`以外はexit 0/no-op。
+- `cwd`欠落/relative/non-directoryはredacted warning後exit 0。
+- 正常時も5秒以内にexit。GitHub/AI処理を実行しない。
 
----
+### エラーレスポンス共通形式
+
+```json
+{
+  "error": {
+    "code": "ERROR_CODE",
+    "message": "user-safe message"
+  }
+}
+```
+
+| ステータス | code | 発生条件 |
+|---:|---|---|
+| 400 | `INVALID_REQUEST` | request validation失敗 |
+| 404 | `PROJECT_NOT_FOUND` | project idなし |
+| 404 | `CANDIDATE_NOT_FOUND` | candidate idなし |
+| 409 | `PROJECT_ALREADY_REGISTERED` | local pathまたはrepo node id重複 |
+| 409 | `CANDIDATE_ALREADY_DECIDED` | decline/registered等への重複操作 |
+| 409 | `RUN_ALREADY_ACTIVE` | recovery実行中 |
+| 409 | `BACKUP_ALREADY_ACTIVE` | backup実行中 |
+| 409 | `REPOSITORY_NAME_CONFLICT` | 自動repo名が既存別repoと衝突 |
+| 422 | `NOT_GIT_ROOT` | manual登録pathがGit rootでない |
+| 422 | `GIT_LAYOUT_UNSUPPORTED` | linked worktreeまたは非標準`.git` |
+| 422 | `CUSTOM_HOOKS_PATH_UNSUPPORTED` | `core.hooksPath`設定済み |
+| 422 | `REPOSITORY_MISMATCH` | originと対象GitHub repo不一致 |
+| 422 | `GITHUB_AUTH_REQUIRED` | `gh auth status`失敗 |
+| 422 | `HOOK_UNSUPPORTED` | 既存git hookを保持不能 |
+| 422 | `CODEX_NOTIFY_CONFLICT` | user configに別notify |
+| 422 | `CLAUDE_HOOKS_DISABLED` | user settingsでhooks無効 |
+| 422 | `AGENT_HOOK_PATH_STALE` | user設定が移動前のtracker絶対pathを参照 |
+| 422 | `INVALID_AGENT_CONFIG` | Codex/Claude user configが構文不正 |
+| 422 | `NODE_VERSION_UNSUPPORTED` | Node `<24.15.0` |
+| 422 | `GIT_VERSION_UNSUPPORTED` | Git `<2.45.0` |
+| 422 | `GH_VERSION_UNSUPPORTED` | gh `<2.98.0` |
+| 422 | `CODEX_VERSION_UNSUPPORTED` | Codex `<0.152.0` |
+| 422 | `CLAUDE_VERSION_UNSUPPORTED` | Claude Code `<2.1.258` |
+| 422 | `CODEX_AUTH_REQUIRED` | Codex未login |
+| 422 | `CODEX_AUTH_CHECK_FAILED` | Codex auth status取得不能 |
+| 422 | `AI_AUTH_NOT_CHATGPT` | CodexがChatGPT認証でない |
+| 500 | `GITHUB_REPOSITORY_CREATE_FAILED` | Private repo作成失敗 |
+| 500 | `REMOTE_SETUP_FAILED` | origin設定/照合失敗 |
+| 500 | `INITIAL_PUSH_FAILED` | commitあり初回push失敗 |
+| 500 | `BROWSER_OPEN_FAILED` | 確認URL open失敗。candidate自体は保持 |
+| 500 | `INTERNAL_ERROR` | その他 |
 
 ## 6. 画面・コンポーネント設計
 
 | ID | 名称 | ルート | 状態 | 主要コンポーネント | 対応US |
 |---|---|---|---|---|---|
-| UI-01 | プロジェクト登録 | `/` | form/validating/error/success | RegisterProjectForm | US-01 |
-| UI-02 | プロジェクト進捗ダッシュボード | `/` | loading/ready/empty/error | DashboardPage, ProjectCard, StatusBanner | US-02 |
-| UI-03 | プロジェクト詳細 | `/projects/:id` | loading/ready/error | ProjectDetailPage, ProgressSection, EvidenceList, StatusBanner | US-02, US-03, US-05 |
+| S1 | ダッシュボード | `/` | loading/ready/empty/search-empty/error | DashboardPage, DashboardToolbar, DenseProjectRow, CompactProjectCard, StatusBanner | US-04〜09 |
+| S2 | 登録確認 | `/?candidate=<uuid>` | detected/registering/failed/registered/declined | RegistrationPrompt | US-01,02 |
+| S3 | 未登録候補 | `/` | empty/list | RegistrationCandidatePanel | US-03 |
+| S4 | プロジェクト詳細 | `/projects/:id` | loading/ready/error | ProgressSection, ReviewControls, ProgressHistory, EvidenceList | US-08〜10 |
+| S5 | 手動登録 | `/` | idle/validating/error/success | RegisterProjectForm | US-03 |
 
-### ルーティング
+### Dense list固定レイアウト
 
-- client-side router libraryは追加しない。
-- `src/web/App.tsx`が`window.location.pathname`を判定し、`/`と`/projects/:id`を描画する。
-- Fastifyは`/api/*`以外の`/`と`/projects/*`へ`dist/web/index.html`を返す。
+受入viewport=`2005x1271`。
 
-### UI-01 固定入力
+- page outer padding: 24px。
+- header + toolbar +通常時status/candidate collapsed area: `<=190px`。
+- dense row: `104px`固定。
+- row gap: `8px`。
+- 8 rows = 832px、7 gaps=56px、list合計888px。
+- `190 + 888 + 48px footer/margin = 1126px` とし1271px内へ収める。
+- candidate error panel展開時は8件1画面保証対象外。通常dashboard比較状態を受入対象とする。
+- columns:
+  1. project name + currentPosition: `42%`
+  2. nextActions: `31%`
+  3. lastUpdatedAt: `12%`
+  4. badges/actions: `15%`
+- project name: 16px/600、currentPosition:14px/500。これを最も視覚的に強くする。
+- currentPosition/nextActions各2 line clamp。
+- badge: `未反映`, `要確認`, `次の作業あり`。
+- default sort: `lastUpdatedAt DESC`, tie=`name ASC`。任意sortはv2 scope外。
 
-- プロジェクト名
-- ローカルGit root絶対パス
-- GitHub repository `owner/repo`
+### Compact view
 
-成功後は同じ画面の一覧へ追加し、初期recovery状態を表示する。
+- width>=1600pxで3 columns。
+- card min-height 168px。
+- denseと同一ProjectSummaryV2だけを表示。
+- view stateは`localStorage["tracker.dashboard.view.v2"]`へ`dense|compact`。
+- keyなし/invalidは`dense`。
+- view切替によるDB/API mutationは禁止。
 
-### UI-02 カード表示順
+### Detail
 
-各ProjectCardは以下の順で表示。
+固定順:
+1. `現在の状態` panel。
+2. `要確認` / `再生成` controls。
+3. visual divider + `進捗履歴` heading。
+4. history newest-first、20件単位cursor load。
 
-1. project名
-2. `owner/repo`
-3. 最終反映commit短縮SHA（先頭8桁）
-4. 現在地
-5. 完了事項
-6. 次の作業
-7. generation status
-8. backup status
-9. 詳細リンク
-
-`needs_input`のfieldは値を「要補完」と表示する。
-
-### UI-03 判断事項
-
-各判断を以下の順で表示。
-
-1. 判断事項
-2. 判断理由
-3. 根拠リスト
-   - 種別
-   - SHA/Issue番号/PR番号
-   - タイトル
-   - GitHub URL
-
----
+current/historyは同一DOM sectionへ混在させない。
 
 ## 7. 横断的関心事
 
 ### 認証・認可方式
 
-- Web UI/API:
-  - 認証なし。
-  - Server bind先を`127.0.0.1`に固定。
-  - `Host` headerは`127.0.0.1:<port>`または`localhost:<port>`のみ許可。
-  - mutation requestは`Origin`が未指定、または同一originのみ許可。
-  - CORS headerは付与しない。
+- Web:
+  - app認証なし。
+  - bind `127.0.0.1`のみ。
+  - Hostは`127.0.0.1:<port>`または`localhost:<port>`のみ。
+  - mutation Originは欠落またはsame-originのみ。
+  - CORS headerを付けない。
 - GitHub:
-  - `gh` CLIへ委譲。
-  - appはtokenを取得・保存しない。
-  - `gh auth token`および`--show-token`は禁止。
-- AI:
-  - `codex login status`が`Logged in using ChatGPT`の場合だけ実行。
-  - `OPENAI_API_KEY`、`OPENAI_ORG_ID`、`OPENAI_PROJECT_ID`はCodex子プロセス環境から除去。
-  - API key認証のCodexは拒否。
+  - `gh`既存keyring認証へ委譲。
+  - `gh auth token`、token表示optionを禁止。
+  - appはtokenを読取/保存しない。
+- Codex:
+  - `codex login status`がChatGPT loginの場合だけgenerationを許可。
+  - child envから`OPENAI_API_KEY`, `OPENAI_ORG_ID`, `OPENAI_PROJECT_ID`を除去。
+- Claude:
+  - Claude APIは呼ばない。
+  - setup/doctorはversionのみ確認。
+  - real taskで`claude auth status`を確認し、raw JSONをlog保存しない。
+  - `ANTHROPIC_API_KEY`をappへ取込/保存しない。
 
-### エラーハンドリング方針
+### 外部CLI timeout/retry
 
-- UI/API同期処理:
-  - known errorを固定codeへ変換。
-  - stack traceはUIへ返さない。
-- worker:
-  - 例外を`generation_runs`または`backup_runs`へ`failed`として保存。
-  - `error_message`はredaction後の最大500文字。
-- 外部CLI:
-  - timeout:
-    - git: 10秒
-    - gh metadata/list: 20秒
-    - Codex generation: 120秒
-    - backup git push: 60秒
-  - retry:
-    - git local command: 0回
-    - gh read: 1回、1秒後
-    - Codex: 0回。同commitで自動再生成しない。
-    - backup push: 1回、2秒後
+既存Windows process runnerを維持する。
 
-### ログ出力方針
+| 操作 | timeout | retry |
+|---|---:|---|
+| git local read/write | 10s | 0 |
+| gh metadata/read | 20s | 1回、1s後 |
+| gh repo create | 60s | registration全体retryへ委譲 |
+| initial git push | 60s | registration全体retryへ委譲 |
+| Codex generation | 120s | 0 |
+| backup git push | 60s | 1回、2s後 |
+| agent-event local processing | 5s total | 次agent event |
+| browser open | 3s | 次agent event |
 
-- level: `info`, `warn`, `error`
-- format: JSON Lines
-- output: `<TRACKER_DATA_DIR>/logs/app.log`
-- rotate:
-  - 5 MiBでrotate。
-  - 5世代保持。
-- 記録するID:
-  - project_id
-  - generation_run_id
-  - backup_run_id
-  - commit SHA
-  - error_code
-- 記録禁止:
+registration全体retry:
+- attempt1失敗 → redacted error保存 → 2秒待つ。
+- attempt2実行。
+- attempt2失敗 → `status=failed`, `attempt_count=2`。
+- attempt3以降を自動実行しない。
+- `reopen`後に再承認された場合だけ`attempt_count=0`へresetし、新しい2-attempt cycleを開始。
+
+### GitHub自動登録state machine
+
+1. canonical path存在確認。
+2. Git root判定。Git外なら `git init -b main`。
+3. standard `.git` directory / `core.hooksPath`制約を既存manual登録と同じにする。
+4. originあり:
+   - GitHub URLとしてnormalizeできなければ`REPOSITORY_MISMATCH`。
+   - `gh repo view owner/repo --json id,nameWithOwner,url,defaultBranchRef,visibility,description`。
+   - 既存repoのvisibilityは変更しない。
+5. originなし:
+   - `gh auth status`成功確認。
+   - `gh api user --jq .login`でowner。
+   - 固定repo名正規化。
+   - 同名別repoがあれば`REPOSITORY_NAME_CONFLICT`。
+   - `gh repo create owner/name --private --source <path> --remote origin`。
+   - `gh repo view`再取得でowner/nameと`PRIVATE`を確認。
+6. `git rev-parse --verify HEAD`でHEAD有無。
+7. HEADありかつ新規GitHub repoの場合だけ `git push -u origin <current branch>`。
+8. push後 `git ls-remote origin refs/heads/<branch>` を再取得し、remote SHA=local HEADを完全一致確認。
+9. project DB登録、summary算出、existing git hooks設置。
+10. HEADありならregistration recoveryをqueue。HEADなしはgenerationなし。
+11. registration backupをqueue。
+12. candidate=`registered`, `project_id`設定。
+
+### エラーハンドリング
+
+- UIへstack trace/CLI raw stderrを返さない。
+- known failureは固定codeへ変換。
+- DBの`last_error_message`/run errorはredaction後500文字。
+- failed candidateを自動削除しない。
+- agent-event内部failureはlog後exit 0。
+
+### ログ
+
+- level: `info`, `warn`, `error`。
+- JSON Lines。
+- `<TRACKER_DATA_DIR>/logs/app.log`。
+- 5 MiBでrotate、5世代。
+- project_id, candidate_id, run_id, backup_run_id, commit SHA, error_codeだけを識別子として記録可能。
+- 禁止:
   - child process environment全体
-  - token
-  - password
-  - API key
-  - `gh auth` raw output
-  - `codex login status` raw output
-  - AI prompt全文
-  - AI raw output全文
+  - token/password/API key
+  - gh/codex/claude auth raw output
+  - agent input message / assistant message / transcript path
+  - AI prompt/raw output全文
 
-### 秘密情報の扱い
+### 秘密情報
 
-以下のキー名をcase-insensitiveでredactionする。
+case-insensitive redaction key:
+`authorization`, `proxy-authorization`, `cookie`, `set-cookie`, `token`, `access_token`,
+`refresh_token`, `api_key`, `apikey`, `password`, `secret`, `client_secret`,
+`OPENAI_API_KEY`, `GH_TOKEN`, `GITHUB_TOKEN`, `ANTHROPIC_API_KEY`。
 
-```text
-authorization
-proxy-authorization
-cookie
-set-cookie
-token
-access_token
-refresh_token
-api_key
-apikey
-password
-secret
-OPENAI_API_KEY
-GH_TOKEN
-GITHUB_TOKEN
-ANTHROPIC_API_KEY
-```
-
-値は全て`"[REDACTED]"`へ変換。
-
-さらに、DBへ保存するcommit message、commit patch、Issue title/body、PR title/bodyへ以下のhigh-confidence pattern redactionを保存前に適用する。
-
-```text
-GitHub classic/fine-grained token: gh[pousr]_* / github_pat_*
-OpenAI-style key: sk-*
-Anthropic-style key: sk-ant-*
-AWS access key ID: AKIA + 16 uppercase alnum
-PEM private key block: -----BEGIN ... PRIVATE KEY----- から対応ENDまで
-key-value: password|passwd|token|access_token|refresh_token|api_key|apikey|secret|client_secret|access_key に続く値
-URL credential/query: user:password@host および上記secret名のquery parameter
-```
-
-- replacementは型に関係なく`[REDACTED]`。
-- redactionは長さ切り詰めより前に実行する。
-- raw文字列をDB、log、backup、AI promptへ渡さない。
-- backup export直前にも同じscannerを全export文字列へ実行し、secret-like patternを1件でも検知したらbackupを`failed`、`error_code=SECRET_DETECTED`としてpushしない。
+high-confidence pattern:
+- `gh[pousr]_...`, `github_pat_...`
+- `sk-...`, `sk-ant-...`
+- AWS access key id
+- PEM private key
+- `password|token|api_key|secret|client_secret`型key-value
+- URL userinfo/query credential
 
 ### 環境変数一覧
 
-`.env.example`の中身:
+`.env.example`:
 
 ```dotenv
-# 非秘密情報のみ。
-# 空欄なら ~/.ai-dev-progress-tracker を使用。
+# Optional. Defaults to ~/.ai-dev-progress-tracker
 TRACKER_DATA_DIR=
 
-# 既定値 4317。1〜65535。
+# Optional. Defaults to 4317
 TRACKER_PORT=4317
 ```
 
 | 変数名 | 必須 | 用途 | 取得方法 |
 |---|---|---|---|
-| TRACKER_DATA_DIR | No | DB/log/backup clone配置の上書き | ユーザー設定。秘密情報禁止 |
-| TRACKER_PORT | No | localhost listen port | ユーザー設定。既定4317 |
+| `TRACKER_DATA_DIR` | no | DB/log/backup clone path override。test/eval隔離に必須 | ローカルpath |
+| `TRACKER_PORT` | no | localhost port。default4317 | 必要時のみ指定 |
 
-`.env.example`へ秘密情報用変数を追加しない。
-
-### Git hook管理ブロック
-
-`post-commit`:
-
-```sh
-# AI_DEV_PROGRESS_TRACKER_BEGIN:<project-id>
-node "<tracker-root>/dist/cli/index.js" hook-commit \
-  --project-id "<project-id>" \
-  --repo "$(git rev-parse --show-toplevel)" \
-  --sha "$(git rev-parse HEAD)" >/dev/null 2>&1
-# AI_DEV_PROGRESS_TRACKER_END:<project-id>
-```
-
-`pre-push`:
-
-```sh
-# AI_DEV_PROGRESS_TRACKER_BEGIN:<project-id>
-node "<tracker-root>/dist/cli/index.js" hook-backup \
-  --project-id "<project-id>" \
-  --repo "$(git rev-parse --show-toplevel)" \
-  --sha "$(git rev-parse HEAD)" >/dev/null 2>&1 || true
-# AI_DEV_PROGRESS_TRACKER_END:<project-id>
-```
-
-hook scriptが新規の場合は先頭に`#!/bin/sh`を入れる。
-
-### evidence収集範囲
-
-commit runごとに以下だけを収集する。
-
-1. local Git:
-   - 対象commitのSHA、parent SHA、author date、message。
-   - `git show --format=fuller --stat --patch --no-ext-diff --unified=3 <sha>`
-   - patch本文は最大120,000文字。超過時は末尾を切り、`truncated:true`をpayloadへ保存。
-2. GitHub Issues:
-   - `gh issue list -R owner/repo --state all --limit 20 --json number,title,state,body,updatedAt,url,labels`
-   - `updatedAt`降順。
-   - bodyは各8,000文字上限。
-3. GitHub Pull Requests:
-   - `gh pr list -R owner/repo --state all --limit 20 --json number,title,state,body,updatedAt,mergedAt,url,headRefName,baseRefName`
-   - `updatedAt`降順。
-   - bodyは各8,000文字上限。
-4. 既存progress:
-   - 対象projectの最新1 snapshotだけ。
-5. 他projectのDB行、Git repo、GitHub repositoryは一切入力しない。
-6. commit message/patch、Issue/PR title/bodyは「秘密情報の扱い」のscannerを通した**後の文字列だけ**を`evidence.payload_json`へ保存し、AIへ渡す。
-
-### Codex実行コマンド
-
-child processは`spawn`でshellを使わずargv配列で起動する。
-
-```text
-codex
-  --model gpt-5.6-terra
-  --ask-for-approval never
-  --sandbox read-only
-  exec
-  --ephemeral
-  --skip-git-repo-check
-  --output-schema <absolute-path>/schemas/progress-output.schema.json
-  --output-last-message <temp-dir>/progress.json
-  -
-```
-
-- stdin: 生成prompt。
-- cwd: OS temp配下に作る空ディレクトリ。
-- promptにはevidence bundleをJSONで埋め込む。
-- `OPENAI_API_KEY`, `OPENAI_ORG_ID`, `OPENAI_PROJECT_ID`を子環境から削除。
-- exit code 0かつoutput fileがvalid JSONの場合のみ検証へ進む。
-- output JSONをDB保存前にZodとevidence参照で再検証。
-- valid outputは4 fieldのconfirmed数で分類する:
-  - 4: `generation_runs.status=succeeded`, `progress_snapshots.recovery_status=complete`
-  - 1〜3: `generation_runs.status=partial`, `progress_snapshots.recovery_status=partial`
-  - 0: `generation_runs.status=unrecoverable`, `progress_snapshots.recovery_status=unrecoverable`
-- Codex error、timeout、schema不一致、unknown evidence IDは`generation_runs.status=failed`としsnapshotを作らない。
-- dashboard/detailが採用するsnapshotは`commits.detected_at DESC, progress_snapshots.created_at DESC`の先頭1件。古いcommitの遅延完了で表示を巻き戻さない。
-
-### AI prompt固定契約
-
-```text
-あなたは開発進捗抽出器です。
-入力のevidence以外の知識・推測を使わないでください。
-4フィールド currentPosition / completedItems / nextActions / importantDecisions を返してください。
-
-confirmed の条件:
-- evidence本文に明記された事実だけを confirmed にできます。
-- Issue/PRのタイトルだけ、本文が空・曖昧・一語、依存更新やlockfileやフォーマット等のroutine変更しか無い場合は、
-  その事実からプロジェクトの進捗は判断できません。confirmed にせず needs_input にしてください。
-- 推測・要約・言い換えによる穴埋めは禁止です。
-
-needs_input の固定形式 (説明文やevidenceIdを入れない):
-- currentPosition: {"status":"needs_input","text":"要補完","evidenceIds":[]}
-- completedItems / nextActions / importantDecisions: {"status":"needs_input","items":[],"evidenceIds":[]}
-
-evidence が全く役に立たない場合は、4フィールドすべてを上記 needs_input 形式で返してください。
-どんな入力でも必ずJSON Schemaに完全一致する有効なJSONを返し、拒否や自由文で応答しないでください。
-confirmed の field と item には、入力bundleに存在する evidenceId を1件以上付けてください。
-判断事項(importantDecisions)の confirmed item には decision と rationale を含めてください。
-```
-
-出力受理は寛容側に倒す。`needs_input` の field はモデルが付けた説明文 / evidenceId / item を落として上記固定形式へ正規化する（推測の除去。推測の確定保存ではない）。`importantDecisions` の `confirmed` で `decision` / `rationale` が空、または item に evidence が無い decision item は捨て、field-level evidence が残っていれば `items=[]` の `confirmed` として受理する。これらを `CODEX_OUTPUT_INVALID` で run 全体を失効させない。
-
-### バックアップ先
-
-固定:
-
-```text
-<gh active user>/ai-dev-progress-tracker-backup
-```
-
-要件:
-
-- repositoryが存在しなければ`gh repo create`でPrivate作成。
-- 既存の場合はvisibility=`PRIVATE`であること。
-- rootの`manifest.json`に`appId: "ai-dev-progress-tracker"`がない既存repositoryは使用拒否。
-- default branchは`main`。
-- local cloneは`<TRACKER_DATA_DIR>/backup-repo`。
-- `gh auth setup-git`を初回ensure時に実行。
-
-### バックアップファイル
-
-```text
-backup-repo/
-├── .gitattributes   # 内容は `* -text\n`。改行変換を無効化する
-├── manifest.json
-└── data/
-    └── backup-v1.json
-```
-
-`backup-v1.json`はUTF-8、2-space indent、末尾LF。配列はID昇順でsortする。
-改行はLF固定で、`.gitattributes`により`core.autocrlf`等の変換対象から外す。
-
-含めるテーブル:
-
-- projects
-- commits
-- evidence
-- generation_runs
-- run_evidence
-- progress_snapshots
-
-含めない:
-
-- backup_runs
-- worker_leases
-- logs
-- locks
-- 認証情報
-- environment
-- Codex raw session
-- GitHub token
-
-`manifest.json`:
-
-```json
-{
-  "appId": "ai-dev-progress-tracker",
-  "schemaVersion": 1,
-  "createdAt": "2026-09-01T00:00:00.000Z",
-  "sha256": "<backup-v1.json sha256>",
-  "counts": {
-    "projects": 0,
-    "commits": 0,
-    "evidence": 0,
-    "generationRuns": 0,
-    "runEvidence": 0,
-    "progressSnapshots": 0
-  }
-}
-```
-
-### worker lease
-
-SQLiteの`worker_leases`を使う。file lockは使わない。
-
-- generation scope: `generation:<project-id>`
-- backup scope: `backup`
-- enqueue transaction内で:
-  1. `heartbeat_at`が180秒より古いleaseを削除する。
-  2. generationのstale lease削除時、そのscopeの`running` runを`failed / WORKER_LEASE_EXPIRED`へ変更する。
-  3. scope leaseがなければUUID `owner_token`で作成し、呼出元へ`shouldSpawn=true`を返す。
-  4. scope leaseがあればrunだけqueueし、`shouldSpawn=false`を返す。
-- workerは30秒ごと、および各外部CLI呼び出し直前・直後にheartbeatを更新する。
-- workerはqueued jobを順に処理し、queueが空になった時だけtransaction内で自分の`owner_token`と一致するleaseを削除する。
-- queue追加とlease削除はどちらもSQLite write transactionで直列化し、queue取りこぼしを禁止する。
-- worker spawnに失敗した場合は作成したleaseを削除し、起点runを`failed / WORKER_SPAWN_FAILED`にする。
-
-### バックアップ repo の取得・commit・push
-
-`<TRACKER_DATA_DIR>/backup-repo`を作業cloneとして使う。
-
-1. cloneが無ければ`git clone <repo url> backup-repo`。`gh repo create`直後のbackup repoはcommitが1つも無い（`gh api repos/<owner>/<name>/branches`が`[]`）。この空repoをcloneすると作業treeのHEADはunborn状態になる。
-2. cloneがあり、かつ`git rev-parse HEAD`でcommitが取得できる場合だけ`git pull --ff-only`する。commitが無い（初回・unborn HEAD）ときはfast-forward対象が無いため**pullをスキップ**する。commitがあるcloneでpullが失敗したら`failed / BACKUP_PULL_FAILED`。pull成功後は`git checkout HEAD -- .`で追跡ファイルを現在の`.gitattributes`で再展開する（後述）。
-3. rootに`.gitattributes`（内容は`* -text\n`）を置き、`manifest.json`と`data/backup-v1.json`を改行変換なし（binary扱い）でcheckoutさせる。Windowsの`core.autocrlf`等でLF↔CRLF変換が起きると、生成時に計算した`sha256`とclone後のbyte列が不一致になりrestoreが`BACKUP_CHECKSUM_MISMATCH`になるため。`.gitattributes`が無い既存backup repo（本規定より前に作られたもの）は、次回backupでexport差分の有無にかかわらず`.gitattributes`を追加commit/pushして正しい状態へ置き換える。
-4. export結果に差分がある、または`.gitattributes`が未設置のときのみcommit/pushする。commit前に`git symbolic-ref HEAD refs/heads/main`で現在branchをDESIGN固定の`main`へ寄せる（既に`main`ならno-op、index/working treeは変更しない）。commitは`-c commit.gpgsign=false`で行う。
-5. pushは`git push -u origin main`（明示refspec + upstream設定）。初回はこのpushでbackup repoに`main` branchが作られる。1回失敗したら2秒後に1回再試行し、なお失敗なら`failed / BACKUP_PUSH_FAILED`。
-6. restore時のcloneも同じ`.gitattributes`が適用される。既存cloneを再利用する場合は`git pull --ff-only`後に`git checkout HEAD -- .`で再展開し、`manifest.json` / `data/backup-v1.json`を作業treeから読み直して`sha256`検証する。
-
-### backupとgenerationの同期
-
-- `registration`と`pre_push` backupは`project_id`と`source_commit_sha`を必須で持つ。
-- backup workerはexport前に対象`generation:<project-id>:<source_commit_sha>` runがterminal (`succeeded|partial|unrecoverable|failed`)になるまで最大180秒待つ。
-- 180秒でterminalにならなければbackup runを`failed / GENERATION_NOT_SETTLED`にし、export/pushしない。
-- `manual` backupは全projectの`queued|running` generation runが0件になるまで最大180秒待つ。同条件を満たさなければ`GENERATION_NOT_SETTLED`。
-- export内容が前回backupとbyte-identicalなら新しいGit commitを作らず、既存backup HEADを`backup_commit_sha`へ保存して`succeeded`とする。
-
----
+credential用envを`.env.example`へ追加しない。
 
 ## 8. テスト戦略
 
 | 層 | 対象 | ツール | カバレッジ目標 |
-|---|---|---|---:|
-| 単体 | schema、redaction、分類、adapter、hook編集、backup export | Vitest 4.1.11 | statements 90%、branches 85% |
-| 結合 | SQLite、registration、generation、recovery、backup、restore | Vitest 4.1.11 | 主要USの正常/異常系100% |
-| E2E | 登録、dashboard、detail | Playwright 1.62.1 / Chromium | UI-01〜03の主要導線100% |
+|---|---|---|---|
+| 単体 | normalization、freshness、candidate state、redaction、settings merge、schema | Vitest 4.1.11 | statements >=90%, branches >=85% |
+| 結合 | SQLite migration、registration、retry、backup/restore、generation queue | Vitest 4.1.11 + temp DB/repo + fake gh/codex | 全体coverage目標に含む |
+| E2E | dashboard、registration、filter、toggle、search、detail | Playwright 1.62.1 | PLAN画面受入を全scenario化 |
+| 実機 | Codex、Claude、GitHub create/push、Codex regenerate、GitHub backup roundtrip | 専用script | 外部MUST経路を各1回以上成功 |
+| 性能 | 8件dashboard、search/filter | Playwright + `eval-ui-performance.ts` | initial<=2.0s、search/filter<=0.5s |
 
-### 外部依存のテスト方針
+### fakeと実機の分離
 
-CIでは実GitHub/Codexを呼ばない。
+- CIはfake gh/codexを使い外部認証を要求しない。
+- real scriptsはCIに含めない。
+- external service機能はfakeだけで完了扱いにせず、TASKSの専用実機タスクを必須にする。
+- 実機script:
+  - localはOS temp。
+  - GitHubは専用Private fixture repoだけ。
+  - Codex/Claude detectionはinvocation-level config/temp settingsでuser agent configを書き換えない。
+  - backupは`ai-dev-progress-tracker-backup-e2e-fixture`を使いproduction backup repoを触らない。
 
-- `tests/helpers/fake-gh.ts`
-  - argvに応じて固定JSONを返す実行ファイルを一時PATHへ置く。
-- `tests/helpers/fake-codex.ts`
-  - `codex --version`
-  - `codex login status`
-  - `codex ... exec`
-  を模擬し、schema-valid JSONまたは故意のinvalid JSONを返す。
-- `tests/unit/version-check.test.ts`
-  - Node: `24.14.9` fail、`24.15.0` pass、`24.99.99` pass、`25.0.0` fail。
-  - Git: `2.44.9` fail、`2.45.0` pass、`3.0.0` pass。
-  - gh: `2.97.9` fail、`2.98.0` pass、`3.0.0` pass。
-  - Codex: `0.145.9` fail、`0.146.0` pass、`0.147.0` pass。
-  - parse不能文字列は`VERSION_PARSE_ERROR`。
-- 実Codex品質評価は最終手動確認で実行する。
+### 評価script隔離
 
-### 必須評価fixture
-
-`tests/fixtures/generation-cases.json`:
-- 10ケース。
-- 各ケースに`id`, `commitMessage`, `files[{path,content}]`, `expected`を持つ。
-- `expected`はfieldごとの`status`, `requiredEvidenceExternalKeys[]`を持つ（`mustContain[]` / `mustNotContain[]`は任意の補助チェック。空なら評価しない）。
-- `files`は**新規ファイルのみ**（`docs/eval/<id>.md`など）に書き、既存ソースを上書きしない。
-- `expected`は実測に整合させる: 根拠のあるfield（`currentPosition` / `completedItems` / `importantDecisions`）は`confirmed` + commit evidence（`<commit>`）参照、単一commitでは根拠が乏しい`nextActions`は`needs_input`。これにより「根拠に応じた確定 / 要補完の切り分け」と「過剰生成（根拠なしの`confirmed`）」の双方を検出する。
-
-`tests/fixtures/recovery-cases.json`:
-- 復元可能10ケース。
-- 追加で根拠不足ケース4件（`rec-11`..`rec-14`。4フィールドすべて`needs_input`、`expectedRecoveryStatus=unrecoverable`）。
-- 各ケースに`id`, `evidence[{kind,externalKey,title,body}]`, `expectedRecoveryStatus`, fieldごとの`expected`を持つ。`expected`は`status`と（`confirmed`時の）`requiredEvidenceExternalKeys[]`のみ（`mustContain` / `mustNotContain`は任意の補助チェック）。
-- モデルの`importantDecisions`確定はケースにより揺れる（根拠にdecision文はあるがrationaleが暗黙の場合など）。1実行あたり1ケース程度この揺れでfailしうるが、PLANの合格基準（復元可能10件中8件以上）は満たす。
-
-評価時の文字列比較はUnicode NFKC正規化後に英字だけlowercase化し、substring一致で判定する（`mustContain` / `mustNotContain`使用時のみ）。1ケースは以下を全て満たした時だけpass。
-
-1. expected field statusが一致。
-2. `status=confirmed`のfieldは`requiredEvidenceExternalKeys`を全て参照し、evidenceを1件以上持つ。
-3. `mustContain` / `mustNotContain`が指定されていれば、それを満たす。
-4. unknown evidence IDが0件。
-5. `started_at - detected_at <= 60秒`。
-
-`eval-generation.ts`は評価用commitを、対象repoのHEADから切り出したdetachedな`git worktree`内でのみ作成する。呼び出し元のbranch / working tree / indexは変更せず、終了時に`git worktree remove --force`でworktreeごと破棄する。評価用SQLiteはOS tempに置く。CIでは実行しない。
-
-### 非機能テスト
-
-- dashboard:
-  - DBへ100 project、各20 snapshotをseed。
-  - API取得+Chromium初回描画が2秒以内。
-- detail:
-  - evidence 100件のprojectで2秒以内。
-- startup:
-  - test data dirでserver start/stopを10回、10/10成功。
-- commit start latency:
-  - hook call時刻から`generation_runs.started_at`まで60秒以内。
-  - workerテストでは5秒以内を期待値とする。
-- silent failure:
-  - fake Codex exit 1。
-  - invalid JSON。
-  - unknown evidence ID。
-  - 全件`failed`。
-- secret:
-  - sentinel secretsをprocess envへ置いて全機能実行。
-  - DB/log/exportを走査し0件。
+- `eval-generation.ts` / `eval-recovery.ts`: 既存detached worktree隔離を維持。
+- `eval-recovery.ts`: v1.7のdefault fixture契約（expected recovery status + field status + required evidence + unknown evidence 0件）を維持する。`mustContain` / `mustNotContain`は任意補助checkのままとし、default fixtureの必須expectedへ戻さない。
+- recovery release gate: 復元可能10case中8以上、根拠不足4caseは4/4 `unrecoverable`。自然言語本文そのものはexpectedへ固定しない。
+- `eval-ui-performance.ts`:
+  - `TRACKER_DATA_DIR=<OS temp>`。
+  - `TRACKER_PORT=4318`。使用中ならfailし別portを自動選択しない。
+  - fixture SQLiteのみ。
+  - target repo working tree/DBを書き換えない。
+  - viewport=`2005x1271`。
+- expected値は想定で書かない。
+  - harness作成タスクと、実測して`ui-performance-observed.json`を確定するタスクを分離。
+  - thresholdだけPLANの2.0s/0.5sを事前固定する。
 
 ### テスト実行コマンド
 
-```bash
-npm ci
+```text
 npm run lint
 npm run typecheck
 npm test
+npm run test:integration
 npm run build
-npx playwright install --with-deps chromium
 npm run test:e2e
+npm run verify:secrets
+npm run test:all
 ```
 
-### CIで走らせる内容
+追加:
+```text
+npm run setup:agents
+npm run real:codex-detection
+npm run real:claude-detection
+npm run real:github-registration
+npm run real:backup-restore
+npm run real:regeneration
+npm run eval:ui
+npm run eval:ui:record
+```
 
-`.github/workflows/ci.yml`:
+### CI
 
-1. `runs-on: ubuntu-24.04`。
-2. `actions/checkout@v7.0.1`。
-3. `actions/setup-node@v7.0.0`、`node-version: 24.15.0`、`cache: npm`。
-4. `npm install --global npm@12.0.2`。
-5. `npm --version`が`12.0.2`と完全一致することを検証。
-6. `node -e`で`process.versions.node`が`>=24.15.0 <25`を満たすことを検証。
-7. `npm ci`。
-8. `npx playwright install --with-deps chromium`。
-9. `npm run lint`。
-10. `npm run typecheck`。
-11. `npm test`。
-12. `npm run build`。
-13. `npm run test:e2e`。
+Node `24.15.0`で:
+1. `npm ci`
+2. `npm run lint`
+3. `npm run typecheck`
+4. `npm test`
+5. `npm run build`
+6. `npm run test:e2e`
+7. `npm run verify:secrets`
 
----
+real scriptsはCIへ含めない。
 
 ## 9. デプロイ
 
 ### 環境一覧
 
-- `local-development`
-- `local-production`
-- `ci`
+| 環境 | 用途 | DATA_DIR | 外部service |
+|---|---|---|---|
+| local-dev | 実装 | tempまたはdefault | fake標準 |
+| local-real | 実機 | temp | real gh/Codex/Claude + fixture repo |
+| local-production | 本人利用 | `~/.ai-dev-progress-tracker` | real gh/Codex、Claudeは検知hook |
+| GitHub Actions | CI | temp | fakeのみ |
 
-外部サーバー環境は作らない。
+### 初回セットアップ
 
-### 初回セットアップ手順
-
-```bash
-git clone <tracker-repository>
-cd ai-dev-progress-tracker
-npm install --global npm@12.0.2
+```powershell
 npm ci
 npm run build
 npm run cli -- doctor
+npm run setup:agents
 npm start
 ```
 
-ブラウザ:
+- `setup-agents`前にbuild必須。user configへ`dist/cli/index.js`絶対pathを記録する。
+- Codexに別`notify`があれば`CODEX_NOTIFY_CONFLICT`で停止し無変更。
+- Claude `disableAllHooks=true`も無変更で停止。
+- setup後`doctor`で`codexDetection=ready`, `claudeDetection=ready`。
+- appを移動した場合はbuild後`setup-agents --repair`。
 
-```text
-http://127.0.0.1:4317
-```
+### 通常起動
 
-### GitHub認証
-
-事前にユーザー自身が実行する。
-
-```bash
-gh auth login
-```
-
-アプリはtoken入力欄を持たない。
-
-### Codex認証
-
-事前にユーザー自身が実行する。
-
-```bash
-codex --version
-# 0.146.0以上であること
-codex login
-codex login status
-```
-
-`Logged in using ChatGPT`以外はMVP標準経路として不許可。
-
-### バックアップ復元
-
-ローカルDB消失時:
-
-```bash
-npm ci
-npm run build
-npm run cli -- restore
+```powershell
 npm start
 ```
 
-既存DBを上書きする明示操作:
+agent-eventがserver未起動なら同じbuildの`dist/server/index.js`をdetached起動し、health成功後に確認URLを開く。
 
-```bash
-npm run cli -- restore --force
-```
+### DB upgrade
 
-### ロールバック手順
+- server/CLI起動時にmigration 001→002をtransactionで適用。
+- v1 DB変更前に`tracker.db.pre-v2-<UTC timestamp>`を1 copy。
+- copyは自動削除しない。
 
-アプリコード:
+### ロールバック
 
-```bash
-git checkout <known-good-tag-or-commit>
-npm ci
-npm run build
-npm start
-```
-
-DB:
-
-- schema v1のみのためMVP内でdown migrationは作らない。
-- restore前の`--force`は既存DBを`tracker.db.pre-restore-<timestamp>`へ退避。
-- 問題時はserver停止後、その退避DBを`tracker.db`へ戻す。
-
----
+1. app停止。
+2. v2 DBを `tracker.db.v2-failed-<timestamp>`へrename。
+3. `tracker.db.pre-v2-<timestamp>`を`tracker.db`へcopy。
+4. v1.3 compatible revisionへcheckout。
+5. v2 backupをv1 appで読ませない。必要ならGitHub backup historyのv1 manifest commitからrestore。
+6. v2 CLI `setup-agents --uninstall`でmanaged Codex notify/Claude hookを除去してからv1へ戻す。
 
 ## 10. 設計判断ログ
 
 | # | 論点 | 決定 | 理由 | 代替案 |
-|---:|---|---|---|---|
-| D001 | ローカルproject識別 | canonical Git root realpath + GitHub repo node ID + app UUID | 1project 1repoの対応を一意に保つ | — |
-| D002 | repository登録 | ユーザー入力`owner/repo`とlocal `origin`を一致検証 | 別repo混入を拒否する | — |
-| D003 | progress形式 | JSON Schema v1 + Zod二重検証 | 必須4項目と根拠参照を機械判定する | — |
-| D004 | commit検知 | 標準layout repositoryの`.git/hooks/post-commit` | commit成立後を保証契機にする | — |
-| D005 | hook処理 | queue登録 + DB lease + detached worker | `git commit`を長時間blockせずqueueを取りこぼさない | — |
-| D006 | AI標準経路 | Codex CLI + ChatGPT認証 | 追加API従量課金を標準経路にしない | — |
-| D007 | AI認証 | `codex login status`でChatGPT認証だけ許可 | API key課金経路を拒否する | — |
-| D008 | GitHub取得 | gh CLI | 認証情報をappへ複製しない | — |
-| D009 | push契機 | `pre-push`でbackup enqueue | Git標準hookでpush時処理を起動する | — |
-| D010 | push時AI生成 | 実行しない | PLAN F9 WON'Tを維持する | — |
-| D011 | backup repository | 専用Private repo固定名 | trackerデータと対象project commitを分離する | — |
-| D012 | backup内容 | secret scan済みdeterministic JSON + checksum | DBバイナリ依存なしで検証・復元する | — |
-| D013 | recovery分類 | 4/4 complete、1-3/4 partial、0/4 unrecoverable | PLANの成功・部分・不能を機械判定する | — |
-| D014 | 根拠不足 | `needs_input` / 「要補完」固定 | 推測の確定保存を防ぐ | — |
-| D015 | UI認証 | なし、loopback限定 | 単一ユーザー・ローカルMVPに限定する | — |
-| D016 | project削除 | v1ではAPI/UIを実装しない | F1〜F7以外を増やさない | — |
-| D017 | timeline | 保存はするが専用時系列UIを作らない | F10 WON'T(v1)を維持する | — |
-| D018 | runtime/CLI version policy | Node `>=24.15.0 <25`、Git `>=2.45.0`、gh `>=2.98.0`、Codex `>=0.146.0` | 実機検証差分をv1.1へ反映 | — |
-| D019 | 依存install script許可 | npm `12.0.2`が既定でblockするため`package.json`の`allowScripts`で`better-sqlite3`と`esbuild`のみバージョンピン許可 | native/build依存を`npm ci`で動作させつつ許可対象を最小化する | 全script許可（却下: 攻撃面拡大）／native依存を別実装へ差し替え（却下: DESIGN技術選定固定） |
-| D020 | better-sqlite3の型定義 | 型定義専用パッケージ`@types/better-sqlite3@9.6.0`を`devDependencies`へ追加 | `better-sqlite3`は型を同梱せず、`strict`前提のtypecheckに型が必須。ランタイム挙動は不変 | 手書きambient宣言（却下: 保守コスト増・不正確）／`any`許容（却下: 規約でany禁止） |
-| D021 | Windowsでの外部CLI起動と検査失敗の切り分け | process runnerが`PATH`+`PATHEXT`で実体を解決し、`.cmd`/`.bat` shimは`%ComSpec% /d /s /c`経由で（shellなしで）起動する。Codex検査は「実行不能」を`CODEX_VERSION_CHECK_FAILED`/`CODEX_AUTH_CHECK_FAILED`、「下限未満」を`CODEX_VERSION_UNSUPPORTED`として別コードで返す | Windowsではnpm製CLI（`codex`）が`.cmd` shimで、`spawn(shell:false)`が直接起動できずCVE-2024-27980で拒否される。実行不能と下限未満を同一コードにすると実機での原因切り分けができない | `shell:true`（却下: DESIGNの`shell:false`固定に反する）／実行時にnpm globalの`codex.js`実体を推測（却下: npm版差で壊れやすい）／`cross-spawn`依存追加（却下: 追加npm package最小化方針。相当ロジックを内製） |
-| D022 | 空backup repoの初回同期 | commitのあるcloneのみ`git pull --ff-only`し、unborn HEAD（`gh repo create`直後の空repoをcloneした状態）ではpullをスキップして初回pushへ進む。pushは`git push -u origin main`、その前に`git symbolic-ref HEAD refs/heads/main`で固定branchへ寄せる | 空repoにはbranch参照が無く`pull --ff-only`が必ず失敗して初回backupが成立しない。空repo判定を`git rev-parse HEAD`の可否で行えば追加のGitHub API呼び出しも不要 | `gh repo create`時に初期commitを作る（却下: ensure処理にclone/commit/pushが増え、visibility検証やmarker検証と手順が交錯する）／`--ff-only`を外して常にpull（却下: 誤ったfast-forwardでないmergeを許容しかねない） |
-| D025 | recovery出力受理の寛容化 | promptに`needs_input`固定形式と「タイトルのみ/routine変更は根拠不足」「有効JSONを必ず返す」を明記。`validateProgressOutput`は`needs_input` fieldを固定形式へ正規化し、`importantDecisions` confirmedの形式不備decision itemを除去する。run全体を`CODEX_OUTPUT_INVALID`で落とさない | 根拠が乏しいケースでモデルが`needs_input`に説明文やevidenceIdを付ける／confirmed decision itemの`rationale`が空になる程度のブレで、正しく「復元不能」を返しているのに出力全体が失効しsnapshotが残らない。`needs_input` fieldの中身は定義上無意味なので、モデルの付けた推測を落とす正規化は情報を失わずD014に整合する | schemaに`if/then`で`needs_input`形式を強制（却下: OpenAI structured outputが`if/then`/`allOf`に制約があり実効性が乏しい）／厳格なまま維持しリトライで対処（却下: レイテンシと従量コストが増え、根本原因が残る）／`needs_input`時にfieldをoptionalにする（却下: schemaが緩みすぎ、confirmed経路の検証も甘くなる） |
-| D024 | generation評価harnessの隔離と期待値基準 | 評価用commitは対象repoのHEADから切り出したdetached `git worktree`内でのみ行い、終了時に破棄する。fixtureの`expected`は「根拠のあるfieldは`confirmed` + evidence、根拠の乏しい`nextActions`は`needs_input`」を実測に合わせて固定し、pass条件から自然言語のsubstring一致（`mustContain`）を外す | harnessが対象repoのbranch / working tree / indexへ直接commitすると、評価用repoを誤って指定した場合に実ソースを破壊する（実際に発生）。また旧fixtureは`importantDecisions`に`needs_input`を期待していたが実際は根拠付きで`confirmed`になり、substring一致は同義の別表現で不合格になるため自然言語生成の評価として機能しない | 対象repoで直接commitしstash/resetで戻す（却下: 中断時に復旧しきれず作業を失う恐れ／indexやstashの状態に依存）／別repoをcloneして評価（却下: private repoのissue/PR取得が壊れる、cloneコスト）／`mustContain`を維持し表現ゆれを許容語で吸収（却下: 語彙リストの保守が生成品質と無関係に膨らむ） |
-| D023 | backupファイルの改行変換防止 | backup repo rootに`.gitattributes`（`* -text\n`）を置き、`manifest.json` / `data/backup-v1.json`をbinary扱い（改行変換なし）でcheckoutさせる。既存repoは次回backupで`.gitattributes`を追加commitして置き換え、clone再利用時は`git pull`後`git checkout HEAD -- .`で再展開する | Windowsの`core.autocrlf`がcheckout時にLF→CRLF変換し、生成時`sha256`（LF基準）とclone後byte列が不一致になり`restore`が`BACKUP_CHECKSUM_MISMATCH`で失敗する。ファイル単位の属性指定が最小の是正で、diff表示も不要なbackup用途に適合する | restore側で改行を正規化してからhash（却下: 正当なCRLFを含む値を静かに書き換え、checksumの意味が失われる）／`sha256`計算前にファイルを`\r\n`→`\n`変換（却下: 同上、かつ生成側と検証側でロジックが分岐する）／backupを常にbase64等でencode保存（却下: 人間可読なdeterministic JSONというD012の前提を崩す） |
-
----
+|---|---|---|---|---|
+| D001 | v1物理仕様 | 公開commit `c281f91`、DESIGN v1.7と同commitの実装ファイルを正本 | 2026-09-02にv1.7が公開され、prompt/validator/evalの実装差分まで参照可能になった | 旧v1.6を正本のまま維持: 却下 |
+| D002 | stack | Fastify/React/SQLite/TypeScript継続 | 互換性と最小変更 | 全面刷新: 却下 |
+| D003 | runtime/CLI version | minimumのみ | 指示と実測環境に一致 | exact pin/upper bound: 却下 |
+| D004 | Codex初回検知 | user top-level `notify` | cwd取得可能、hook trustを必須条件にしない | lifecycle hookのみ: 却下 |
+| D005 | Claude初回検知 | user `UserPromptSubmit` hook | 最初のpromptでcwd取得 | SessionEnd/transcript監視: 却下 |
+| D006 | Codex notify競合 | 上書き/chainせずerror | 既存notifyの秘密値複製を避ける | wrapper chain: 却下 |
+| D007 | 未Git project | 承認後`git init -b main` | repoなし/commitなしでも登録完結 | Git必須拒否: 却下 |
+| D008 | auto repo名 | fixed normalization、衝突error | agent判断を残さない | suffix自動採番: 却下 |
+| D009 | registration retry | total2 attempts、2s | 無限retry回避 | 3回/exponential: 却下 |
+| D010 | generation commit/time | existing snapshotを正本 | 重複列不要 | projectsへduplicate: 却下 |
+| D011 | 未反映 | local HEADと採用snapshot SHAからderived | restore再現可能 | bool保存: 却下 |
+| D012 | 要確認解除 | regenerate成功で自動解除しない | AI正誤を自動保証しない | 自動clear: 却下 |
+| D013 | lastUpdatedAt | project/commit/snapshot/reviewのmax | 判断に関係する更新だけ | backup時刻含有: 却下 |
+| D014 | dense | 104px row、8件、2005x1271 | 実測viewportで数値的に収める | responsive任せ: 却下 |
+| D015 | state filter | client-side、state OR + search AND | 小規模単独利用で単純・高速 | server full-text: 却下 |
+| D016 | search | NFKC/lower/AND tokens/substring | 日本語/英数で予測可能 | fuzzy search: 却下 |
+| D017 | view state | localStorageだけ | 管理data無変更 | DB保存: 却下 |
+| D018 | history | existing snapshots newest-first cursor | 新table不要 | separate audit table: 却下 |
+| D019 | AI backend | Codexのみ | v1.3生成契約、追加従量APIなし | Claude生成追加: 却下 |
+| D020 | backup | write v2, read v1+v2 | v2復元 + v1互換 | v1 schema変更: 却下 |
+| D021 | unreflected backup | 保存しないderived値 | stale状態回避 | bool backup: 却下 |
+| D022 | agent payload | cwd/event type以外保存しない | privacy最小化 | transcript保存: 却下 |
+| D023 | UI performance | harnessとactual記録を別task | 想定expected禁止 | 事前fixture: 却下 |
+| D024 | real external tests | temp local + dedicated Private fixture repo | fake完結防止とuser data保護 | production repo試験: 却下 |
+| D025 | exact OS/browser未計測 | implementationをblockせずT025で識別情報だけ記録 | viewportは取得済み、追加質問不要 | 推測記載: 却下 |
+| D026 | v1.7 recovery互換 | `c281f91`のprompt固定契約、`needs_input`正規化、不正decision item除去、default recovery fixtureのstatus/evidence中心評価をv2互換契約へ追加 | schema自体は不変でも生成受理・品質評価の意味が変わっており、これを落とすと薄いevidenceでsnapshotが消える不具合や自然言語表現揺れによる誤failへ回帰する | schemaだけを互換対象にする: 却下 |
 
 ## 11. 要判断事項（ユーザー確認待ち）
 
 **なし。**
 
-PLAN.md v1.2で設計AIへ委譲された未確定事項は本設計内で全て固定した。
+OS edition/build、実利用browser名/version、Claude認証状態は未計測だが、いずれも設計方式の分岐条件にしない。TASKSの実機/手動タスクで実測し、最低要件を満たさない場合だけAGENTS.mdの停止条件に従う。
