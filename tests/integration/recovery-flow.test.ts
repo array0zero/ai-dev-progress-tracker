@@ -288,4 +288,29 @@ describe('recovery flow', () => {
       }
     }
   })
+
+  it('keeps mustContain / mustNotContain out of the default fixture expectations', () => {
+    const fixturePath = join(process.cwd(), 'tests/fixtures/recovery-cases.json')
+    const { cases } = JSON.parse(readFileSync(fixturePath, 'utf8')) as {
+      cases: Array<{ id: string; expected: Record<string, Record<string, unknown>> }>
+    }
+
+    // v1.7: default fixture の必須 expected は status / required evidence だけ。
+    // 自然言語本文の一致は任意補助 check であり、必須期待値へ戻さない。
+    const offenders: string[] = []
+    for (const testCase of cases) {
+      for (const [field, expectation] of Object.entries(testCase.expected)) {
+        if ('mustContain' in expectation || 'mustNotContain' in expectation) {
+          offenders.push(`${testCase.id}.${field}`)
+        }
+      }
+    }
+    expect(offenders).toEqual([])
+
+    // evaluator 側は任意 check として受け付ける契約を維持する。
+    const evaluator = readFileSync(join(process.cwd(), 'scripts/eval-recovery.ts'), 'utf8')
+    expect(evaluator).toContain('mustContain?: string[]')
+    expect(evaluator).toContain('mustNotContain?: string[]')
+    expect(evaluator).toContain('expectation.mustContain ?? []')
+  })
 })

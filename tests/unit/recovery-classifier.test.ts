@@ -134,3 +134,36 @@ describe('recovery classification through validateProgressOutput', () => {
     }
   })
 })
+
+describe('v1.7 classification is not weakened by tolerated output noise', () => {
+  it('keeps a 4/4 complete result when one malformed decision item is dropped', () => {
+    const messy = output({})
+    messy.importantDecisions = {
+      status: 'confirmed',
+      items: [
+        { decision: 'd', rationale: 'r', evidenceIds: ['ev-a'] },
+        { decision: '', rationale: '', evidenceIds: [] },
+      ],
+      evidenceIds: ['ev-a'],
+    }
+    const result = validateProgressOutput(messy, EVIDENCE)
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.progress.importantDecisions.items).toHaveLength(1)
+      expect(classifyByConfirmedCount(result.confirmedCount).recoveryStatus).toBe('complete')
+    }
+  })
+
+  it('classifies 3 confirmed as partial and 4 as complete at the boundary', () => {
+    const partial = validateProgressOutput(output({ importantDecisions: true }), EVIDENCE)
+    const complete = validateProgressOutput(output({}), EVIDENCE)
+    expect(partial.ok && classifyByConfirmedCount(partial.confirmedCount)).toEqual({
+      runStatus: 'partial',
+      recoveryStatus: 'partial',
+    })
+    expect(complete.ok && classifyByConfirmedCount(complete.confirmedCount)).toEqual({
+      runStatus: 'succeeded',
+      recoveryStatus: 'complete',
+    })
+  })
+})

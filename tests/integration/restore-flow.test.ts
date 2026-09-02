@@ -17,6 +17,7 @@ import { getBackupRunById } from '../../src/server/db/backup-repository.js'
 import { openDatabase } from '../../src/server/db/connection.js'
 import { insertProject, listProjects } from '../../src/server/db/project-repository.js'
 import { insertRun, upsertCommit } from '../../src/server/db/run-repository.js'
+import { BACKUP_TABLES } from '../../src/server/schemas/backup.js'
 import {
   BACKUP_GITATTRIBUTES,
   createBackupExport,
@@ -107,6 +108,65 @@ describe('restore flow', () => {
       expect(
         (restored.prepare('SELECT COUNT(*) AS n FROM generation_runs').get() as { n: number }).n,
       ).toBe(1)
+    } finally {
+      restored.close()
+    }
+  })
+
+  it('restores a v1 backup with zero logical items missing', () => {
+    seedSource(ctx)
+    const { dataJson, manifestJson } = goodExport()
+    const result = restoreFromBackup(dataJson, manifestJson, join(workDir, 'baseline.db'))
+    expect(result.ok).toBe(true)
+    if (!result.ok) {
+      return
+    }
+
+    const restored = openDatabase(result.tempDbPath)
+    try {
+      const missing: string[] = []
+      for (const table of BACKUP_TABLES) {
+        const query = `SELECT ${table.columns.join(', ')} FROM ${table.table} ORDER BY ${table.orderBy}`
+        const source = ctx.db.prepare(query).all()
+        const target = restored.prepare(query).all()
+        if (JSON.stringify(source) !== JSON.stringify(target)) {
+          missing.push(table.key)
+        }
+      }
+      expect(missing).toEqual([])
+    } finally {
+      restored.close()
+    }
+  })
+
+  it('restores an empty v1 backup as an empty database', () => {
+    const { dataJson, manifestJson } = goodExport()
+    expect(JSON.parse(manifestJson)).toMatchObject({
+      schemaVersion: 1,
+      counts: {
+        projects: 0,
+        commits: 0,
+        evidence: 0,
+        generationRuns: 0,
+        runEvidence: 0,
+        progressSnapshots: 0,
+      },
+    })
+
+    const result = restoreFromBackup(dataJson, manifestJson, join(workDir, 'empty.db'))
+    expect(result.ok).toBe(true)
+    if (!result.ok) {
+      return
+    }
+    const restored = openDatabase(result.tempDbPath)
+    try {
+      expect(listProjects(restored)).toEqual([])
+      for (const table of BACKUP_TABLES) {
+        const count = restored.prepare(`SELECT COUNT(*) AS n FROM ${table.table}`).get() as {
+          n: number
+        }
+        expect(count.n).toBe(0)
+      }
     } finally {
       restored.close()
     }
@@ -429,3 +489,18 @@ function seedSourceLocal(ctx: TestDb): string {
   })
   return projectId
 }
+
+describe('v1 physical contract: backup-v1.schema.json', () => {
+  const canonical = readFileSync(join(process.cwd(), 'schemas/backup-v1.schema.json'))
+  const golden = readFileSync(join(process.cwd(), 'tests/fixtures/v1-compat/backup-v1.schema.json'))
+
+  it('is byte-for-byte identical to the v1-compat golden copy', () => {
+    expect(canonical.equals(golden)).toBe(true)
+  })
+
+  it('fails the comparison when a single byte differs', () => {
+    const mutated = Buffer.from(canonical)
+    mutated[0] = mutated[0] === 0x7b ? 0x20 : 0x7b
+    expect(mutated.equals(golden)).toBe(false)
+  })
+})
