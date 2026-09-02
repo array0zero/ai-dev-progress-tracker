@@ -16,7 +16,12 @@ import {
   getActiveLogin,
   viewRepo,
 } from '../adapters/github.js'
-import { getCandidate, markRegistered, recordFailure } from '../db/candidate-repository.js'
+import {
+  beginRegistration,
+  getCandidate,
+  markRegistered,
+  recordFailure,
+} from '../db/candidate-repository.js'
 import type { Db } from '../db/connection.js'
 import {
   findProjectByLocalPath,
@@ -30,12 +35,16 @@ import { assertHooksInstallable, installHooks } from './hook-service.js'
 import { enqueueRecovery } from './recovery-service.js'
 
 export const REGISTRATION_SCOPE = 'registration'
+/** DESIGN「registration全体retry」: initial + 1 回、間隔 2 秒。変更しない。 */
+export const REGISTRATION_RETRY_DELAY_MS = 2_000
 export const SUMMARY_MAX_LENGTH = 240
 const NAME_MAX_LENGTH = 100
 const README_CANDIDATES = ['README.md', 'README.MD', 'readme.md', 'README', 'README.txt']
 
 export interface RegistrationDeps {
   now?: () => Date
+  /** retry 待ちの実体。テストで待たずに外部状態を変えるための seam。間隔自体は固定。 */
+  sleep?: (ms: number) => Promise<void>
   /** false で登録後の recovery enqueue を抑止する (テスト用)。 */
   autoRecover?: boolean
   /** false で登録後の backup enqueue を抑止する (テスト用)。 */
@@ -303,6 +312,50 @@ export async function runRegistrationAttempt(
     recordFailure(db, candidateId, result.code, result.message)
   }
   return result
+}
+
+function defaultSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/**
+ * DESIGN「registration全体retry」: attempt1 失敗 → error 保存 → 2 秒 → attempt2 → 失敗なら failed。
+ * worker 再起動で attempt1 済み (error あり) の candidate を拾った場合は残り 1 回だけ実行する。
+ */
+export async function runRegistrationCycle(
+  db: Db,
+  candidateId: string,
+  deps: RegistrationDeps = {},
+): Promise<void> {
+  const sleep = deps.sleep ?? defaultSleep
+  const candidate = getCandidate(db, candidateId)
+  if (candidate === null || candidate.status !== 'registering') {
+    return
+  }
+
+  // 再起動で拾った attempt1 済みの candidate。2 秒待って attempt2 だけを実行する。
+  if (candidate.lastErrorCode !== null) {
+    const elapsed =
+      candidate.decisionAt === null
+        ? REGISTRATION_RETRY_DELAY_MS
+        : Date.now() - Date.parse(candidate.decisionAt)
+    if (elapsed < REGISTRATION_RETRY_DELAY_MS) {
+      await sleep(REGISTRATION_RETRY_DELAY_MS - elapsed)
+    }
+    if (beginRegistration(db, candidateId)) {
+      await runRegistrationAttempt(db, candidateId, deps)
+    }
+    return
+  }
+
+  const first = await runRegistrationAttempt(db, candidateId, deps)
+  if (first.ok) {
+    return
+  }
+  await sleep(REGISTRATION_RETRY_DELAY_MS)
+  if (beginRegistration(db, candidateId)) {
+    await runRegistrationAttempt(db, candidateId, deps)
+  }
 }
 
 function workerEntryPath(): string {

@@ -39,6 +39,9 @@ export function RegistrationCandidatePanel({
             {candidate.lastErrorCode !== null ? (
               <span className="candidate-panel__error">{candidate.lastErrorCode}</span>
             ) : null}
+            {candidate.status === 'failed' ? (
+              <span className="candidate-panel__attempts">{candidate.attemptCount}回試行</span>
+            ) : null}
             {candidate.status === 'detected' || candidate.status === 'prompted' ? (
               <a href={`/?candidate=${candidate.id}`}>登録確認を開く</a>
             ) : null}

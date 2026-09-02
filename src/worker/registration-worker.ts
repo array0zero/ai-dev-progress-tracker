@@ -2,7 +2,7 @@ import { listCandidates } from '../server/db/candidate-repository.js'
 import type { Db } from '../server/db/connection.js'
 import {
   type RegistrationDeps,
-  runRegistrationAttempt,
+  runRegistrationCycle,
 } from '../server/services/registration-service.js'
 
 /**
@@ -14,6 +14,6 @@ export async function processRegistrationQueue(db: Db, deps: RegistrationDeps = 
     a.lastSeenAt < b.lastSeenAt ? -1 : a.lastSeenAt > b.lastSeenAt ? 1 : 0,
   )
   for (const candidate of queued) {
-    await runRegistrationAttempt(db, candidate.id, deps)
+    await runRegistrationCycle(db, candidate.id, deps)
   }
 }

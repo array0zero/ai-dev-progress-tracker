@@ -138,6 +138,8 @@ test('carries a failed candidate into the manual form without creating a project
     const panel = page.getByRole('region', { name: '未登録の候補' })
     const row = panel.getByRole('listitem').filter({ hasText: 'candidate-failed' })
     await expect(row).toContainText('REMOTE_SETUP_FAILED')
+    // 2 attempts 使い切った candidate は消えず、試行回数つきで残る
+    await expect(row).toContainText('2回試行')
     await row.getByRole('button', { name: '手動で登録' }).click()
 
     await expect(page.getByLabel('プロジェクト名')).toHaveValue('candidate-failed')
