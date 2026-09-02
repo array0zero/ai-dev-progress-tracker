@@ -6,7 +6,7 @@ v1.3〜v1.7 (T001〜T020) の記録は `PROGRESS-v1.md` を参照。
 
 | タスクID | 状態 | 更新日 | 備考 |
 |----------|------|--------|------|
-| T001 | 進行中 | 2026-09-02 | v2リポジトリ基盤・テスト基盤・CI |
+| T001 | 完了 | 2026-09-02 | commit SHA: 36832f0。engines を `node>=24.15.0` / `npm>=12.0.2` の下限のみへ変更、`packageManager` と `.nvmrc` を削除、`smol-toml@1.8.0` を完全一致でdependenciesへ追加(lock更新)。CIはnpm/Nodeを下限checkへ変更し `verify:secrets` step追加。smoke testへversion parserの正常/境界case(parse失敗・最小一致・最小-1・上限なし)を追加。検証: `npm ci`→lint→typecheck→test(18 files/165件)→build→e2e(14件)→verify:secrets(hit 0件) 全通過。`git status --porcelain` に検証由来の生成物なし。補足: `src/server/config.ts` の node `maxExclusive` は T004(config.ts担当)で除去する。既存 `tests/unit/version-check.test.ts` はDESIGN v2.1のtreeに未記載だがT001の対象外のため無変更。 |
 | T002 | 未着手 | 2026-09-02 | v1.7物理・AI生成・recovery互換golden |
 | T003 | 未着手 | 2026-09-02 | migration 002・v2 domain/API型・candidate repository |
 | T004 | 未着手 | 2026-09-02 | Codex/Claude user integration installer・doctor |
