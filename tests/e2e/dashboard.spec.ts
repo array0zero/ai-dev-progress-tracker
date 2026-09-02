@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect, test } from '@playwright/test'
 import { openDatabase } from '../../src/server/db/connection.js'
@@ -602,4 +603,31 @@ test('combines search with a state filter using AND', async ({ page }) => {
 
   await page.getByLabel('検索').fill('plain')
   await expect(page.getByText('検索に一致するプロジェクトはありません。')).toBeVisible()
+})
+
+test('the recorded UI performance observations meet the PLAN thresholds', async () => {
+  // T022 の実測 fixture。値は eval:ui:record の実出力であり手書きしない。
+  const observed = JSON.parse(
+    readFileSync(join(process.cwd(), 'tests/fixtures/ui-performance-observed.json'), 'utf8'),
+  ) as {
+    thresholds: { initialRenderMs: number; searchMs: number; filterMs: number }
+    runs: Array<{ initialRenderMs: number; searchMs: number; filterMs: number }>
+    emptyRun: { initialRenderMs: number; searchMs: number; filterMs: number } | null
+    viewport: { width: number; height: number }
+    pass: boolean
+  }
+
+  expect(observed.viewport).toEqual({ width: 2005, height: 1271 })
+  expect(observed.thresholds).toEqual({ initialRenderMs: 2000, searchMs: 500, filterMs: 500 })
+  expect(observed.runs).toHaveLength(5)
+  expect(observed.emptyRun).not.toBeNull()
+  for (const run of [
+    ...observed.runs,
+    ...(observed.emptyRun === null ? [] : [observed.emptyRun]),
+  ]) {
+    expect(run.initialRenderMs).toBeLessThanOrEqual(observed.thresholds.initialRenderMs)
+    expect(run.searchMs).toBeLessThanOrEqual(observed.thresholds.searchMs)
+    expect(run.filterMs).toBeLessThanOrEqual(observed.thresholds.filterMs)
+  }
+  expect(observed.pass).toBe(true)
 })

@@ -30,7 +30,9 @@
     "real:claude-detection": "tsx scripts/real-check-claude-detection.ts",
     "real:github-registration": "tsx scripts/real-check-github-registration.ts",
     "real:backup-restore": "tsx scripts/real-check-backup-restore.ts",
-    "real:regeneration": "tsx scripts/real-check-regeneration.ts"
+    "real:regeneration": "tsx scripts/real-check-regeneration.ts",
+    "eval:ui": "tsx scripts/eval-ui-performance.ts",
+    "eval:ui:record": "tsx scripts/eval-ui-performance.ts --record"
   },
   "dependencies": {
     "@fastify/static": "10.1.3",

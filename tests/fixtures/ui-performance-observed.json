@@ -1,0 +1,85 @@
+{
+  "tool": "eval:ui:record",
+  "recordedAt": "2026-09-02T14:34:19.069Z",
+  "viewport": {
+    "width": 2005,
+    "height": 1271
+  },
+  "projectCount": 8,
+  "thresholds": {
+    "initialRenderMs": 2000,
+    "searchMs": 500,
+    "filterMs": 500
+  },
+  "runs": [
+    {
+      "initialRenderMs": 171,
+      "searchMs": 12,
+      "filterMs": 37,
+      "projectCount": 8,
+      "viewport": {
+        "width": 2005,
+        "height": 1271
+      },
+      "startedAt": "2026-09-02T14:34:08.462Z"
+    },
+    {
+      "initialRenderMs": 246,
+      "searchMs": 11,
+      "filterMs": 34,
+      "projectCount": 8,
+      "viewport": {
+        "width": 2005,
+        "height": 1271
+      },
+      "startedAt": "2026-09-02T14:34:10.807Z"
+    },
+    {
+      "initialRenderMs": 174,
+      "searchMs": 11,
+      "filterMs": 35,
+      "projectCount": 8,
+      "viewport": {
+        "width": 2005,
+        "height": 1271
+      },
+      "startedAt": "2026-09-02T14:34:13.277Z"
+    },
+    {
+      "initialRenderMs": 165,
+      "searchMs": 12,
+      "filterMs": 34,
+      "projectCount": 8,
+      "viewport": {
+        "width": 2005,
+        "height": 1271
+      },
+      "startedAt": "2026-09-02T14:34:15.680Z"
+    },
+    {
+      "initialRenderMs": 200,
+      "searchMs": 12,
+      "filterMs": 31,
+      "projectCount": 8,
+      "viewport": {
+        "width": 2005,
+        "height": 1271
+      },
+      "startedAt": "2026-09-02T14:34:18.024Z"
+    }
+  ],
+  "emptyRun": {
+    "initialRenderMs": 111,
+    "searchMs": 20,
+    "filterMs": 44,
+    "projectCount": 0,
+    "viewport": {
+      "width": 2005,
+      "height": 1271
+    },
+    "startedAt": "2026-09-02T14:34:18.842Z"
+  },
+  "passedRuns": 5,
+  "totalRuns": 5,
+  "pass": true
+}
