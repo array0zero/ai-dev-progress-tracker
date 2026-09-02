@@ -25,7 +25,8 @@
     "test:all": "npm run lint && npm run typecheck && npm test && npm run build && npm run test:e2e",
     "eval:generation": "tsx scripts/eval-generation.ts",
     "eval:recovery": "tsx scripts/eval-recovery.ts",
-    "verify:secrets": "tsx scripts/verify-no-secrets.ts"
+    "verify:secrets": "tsx scripts/verify-no-secrets.ts",
+    "real:codex-detection": "tsx scripts/real-check-codex-detection.ts"
   },
   "dependencies": {
     "@fastify/static": "10.1.3",

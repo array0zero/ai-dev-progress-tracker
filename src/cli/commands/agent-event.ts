@@ -176,6 +176,11 @@ export async function runAgentEvent(
     if (Date.now() - startedAt >= TOTAL_BUDGET_MS) {
       return 0
     }
+    // 実機 detection script 用の隔離 seam: candidate だけ作り、server 起動と
+    // browser open を行わない (利用者の実 server / desktop を触らないため)。
+    if (process.env.TRACKER_AGENT_EVENT_PROMPT === 'off') {
+      return 0
+    }
 
     const ready = await (options.ensureServer ?? defaultEnsureServer)(config)
     if (!ready) {
