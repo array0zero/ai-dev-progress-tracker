@@ -135,6 +135,7 @@ describe('backup export', () => {
           url: 'https://github.com/octocat/ai-dev-progress-tracker-backup',
           visibility: 'PUBLIC',
           defaultBranch: 'main',
+          description: '',
         },
       }),
       createPrivateRepo: async () => true,

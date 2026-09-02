@@ -9,6 +9,7 @@ import {
 } from '../db/candidate-repository.js'
 import type { Db } from '../db/connection.js'
 import { approveCandidateRequestSchema, candidateStatusQuerySchema } from '../schemas/candidate.js'
+import { startRegistrationWorker } from '../services/registration-service.js'
 
 function errorBody(code: string, message: string): ApiErrorBody {
   return { error: { code, message } }
@@ -53,6 +54,7 @@ export function candidateRoutes(db: Db): FastifyPluginAsync {
       if (!beginRegistration(db, id, new Date(), name)) {
         return reply.code(409).send(ALREADY_DECIDED)
       }
+      startRegistrationWorker(db, id)
       return reply.code(202).send({ candidateId: id, status: 'registering' })
     })
 

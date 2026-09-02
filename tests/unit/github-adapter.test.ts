@@ -63,6 +63,7 @@ describe('github adapter', () => {
         url: 'https://github.com/octo/demo',
         visibility: 'PRIVATE',
         defaultBranch: 'main',
+        description: '',
       },
     })
   })

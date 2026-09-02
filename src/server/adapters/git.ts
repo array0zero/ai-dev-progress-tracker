@@ -186,3 +186,94 @@ export async function getCommitShow(root: string, sha: string): Promise<CommitSh
   }
   return { text: out.stdout, truncated: false }
 }
+
+// --- v2: 自動登録用のローカル Git 操作 ------------------------------------
+
+const GIT_PUSH_TIMEOUT_MS = 60_000
+
+export interface LocalRepositoryState {
+  /** Git 管理下なら working tree root (realpath)、そうでなければ null */
+  root: string | null
+  gitDir: string | null
+  /** core.hooksPath が設定済みか */
+  customHooksPath: boolean
+  /** origin の raw URL 有無 */
+  hasOrigin: boolean
+  /** origin を GitHub slug へ正規化した結果。GitHub 以外は null */
+  origin: GitHubSlug | null
+  headSha: string | null
+  branch: string | null
+}
+
+/** 承認済み candidate path の現況を 1 回で取る。expectedRepo を前提にしない点が inspectRepository と異なる。 */
+export async function describeLocalRepository(path: string): Promise<LocalRepositoryState> {
+  const empty: LocalRepositoryState = {
+    root: null,
+    gitDir: null,
+    customHooksPath: false,
+    hasOrigin: false,
+    origin: null,
+    headSha: null,
+    branch: null,
+  }
+  const real = await realpathOrNull(path)
+  if (real === null) {
+    return empty
+  }
+  const topLevel = await git(['-C', real, 'rev-parse', '--show-toplevel'])
+  if (topLevel.code !== 0) {
+    return empty
+  }
+  const root = await realpathOrNull(topLevel.stdout.trim())
+  if (root === null) {
+    return empty
+  }
+  const gitDirOut = await git(['-C', root, 'rev-parse', '--absolute-git-dir'])
+  const gitDir = gitDirOut.code === 0 ? await realpathOrNull(gitDirOut.stdout.trim()) : null
+  const hooksPath = await git(['-C', root, 'config', '--get', 'core.hooksPath'])
+  const originOut = await git(['-C', root, 'remote', 'get-url', 'origin'])
+  const hasOrigin = originOut.code === 0 && originOut.stdout.trim() !== ''
+  const headOut = await git(['-C', root, 'rev-parse', '--verify', 'HEAD'])
+  // symbolic-ref は commit 0 件 (unborn HEAD) でも branch 名を返す。detached のときだけ失敗する。
+  const branchOut = await git(['-C', root, 'symbolic-ref', '--short', 'HEAD'])
+  const branch = branchOut.code === 0 ? branchOut.stdout.trim() : null
+
+  return {
+    root,
+    gitDir,
+    customHooksPath: hooksPath.code === 0 && hooksPath.stdout.trim() !== '',
+    hasOrigin,
+    origin: hasOrigin ? normalizeGitHubOrigin(originOut.stdout.trim()) : null,
+    headSha: headOut.code === 0 ? headOut.stdout.trim() : null,
+    branch: branch === null || branch === '' || branch === 'HEAD' ? null : branch,
+  }
+}
+
+/** Git 外フォルダを既定 branch `main` で初期化する。 */
+export async function initRepository(path: string): Promise<boolean> {
+  const out = await git(['-C', path, 'init', '-b', 'main'])
+  return out.code === 0
+}
+
+export async function setOrigin(root: string, url: string): Promise<boolean> {
+  const out = await git(['-C', root, 'remote', 'add', 'origin', url])
+  return out.code === 0
+}
+
+/** 新規 GitHub repository への初回 push。retry は registration 全体 retry へ委譲する。 */
+export async function pushInitial(root: string, branch: string): Promise<boolean> {
+  const out = await runProcess('git', ['-C', root, 'push', '-u', 'origin', branch], {
+    timeoutMs: GIT_PUSH_TIMEOUT_MS,
+  })
+  return out.code === 0
+}
+
+/** push 後の readback。remote branch の SHA を取り直す。 */
+export async function lsRemoteSha(root: string, branch: string): Promise<string | null> {
+  const out = await git(['-C', root, 'ls-remote', 'origin', `refs/heads/${branch}`])
+  if (out.code !== 0) {
+    return null
+  }
+  const sha = out.stdout.trim().split(/\s+/)[0] ?? ''
+  return sha === '' ? null : sha
+}

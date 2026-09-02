@@ -2,8 +2,10 @@ import { parseArgs } from 'node:util'
 import { loadConfig } from '../server/config.js'
 import { openDatabase } from '../server/db/connection.js'
 import { BACKUP_SCOPE } from '../server/services/backup-service.js'
+import { REGISTRATION_SCOPE } from '../server/services/registration-service.js'
 import { processBackupQueue } from './backup-worker.js'
 import { processGenerationQueue } from './generation-worker.js'
+import { processRegistrationQueue } from './registration-worker.js'
 
 async function main(): Promise<void> {
   const { values } = parseArgs({
@@ -26,6 +28,8 @@ async function main(): Promise<void> {
   try {
     if (scope === BACKUP_SCOPE) {
       await processBackupQueue(db, token)
+    } else if (scope === REGISTRATION_SCOPE) {
+      await processRegistrationQueue(db)
     } else {
       await processGenerationQueue(db, scope, token)
     }

@@ -21,6 +21,11 @@ export interface FakeGhFixtures {
   pulls?: unknown[]
   /** per `owner/repo` data */
   repos?: Record<string, FakeRepoData>
+  /**
+   * `gh repo create --source <path> --remote origin` の実体を置くディレクトリ。
+   * 指定すると bare repo を作って origin に張るので、push / ls-remote が実 Git で往復できる。
+   */
+  createRemoteDir?: string
 }
 
 export interface FakeGh {
@@ -33,7 +38,9 @@ export interface FakeGh {
 
 // node が ESM として実行する fake gh 本体。argv に応じた固定 JSON を返し、呼び出しを記録する。
 const FAKE_GH_SOURCE = `
-import { appendFileSync, readFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 
 const argv = process.argv.slice(2)
 const fixtures = JSON.parse(readFileSync(process.env.FAKE_GH_FIXTURES, 'utf8'))
@@ -62,7 +69,33 @@ if (c0 === 'api' && c1 === 'user') {
 }
 
 if (c0 === 'repo' && c1 === 'create') {
-  process.exit(fixtures.repoCreateExitCode ?? 0)
+  const exitCode = fixtures.repoCreateExitCode ?? 0
+  if (exitCode !== 0) process.exit(exitCode)
+  const created = argv[2]
+  let url = 'https://github.com/' + created
+  const sourceIndex = argv.indexOf('--source')
+  if (fixtures.createRemoteDir) {
+    const bare = join(fixtures.createRemoteDir, created.replace('/', '__') + '.git')
+    mkdirSync(bare, { recursive: true })
+    execFileSync('git', ['init', '--bare', '-b', 'main', bare])
+    url = bare
+    if (sourceIndex !== -1 && argv[sourceIndex + 1]) {
+      execFileSync('git', ['-C', argv[sourceIndex + 1], 'remote', 'add', 'origin', bare])
+    }
+  }
+  fixtures.repos = fixtures.repos ?? {}
+  fixtures.repos[created] = {
+    repoView: {
+      id: 'NODE_' + created.replace('/', '_'),
+      nameWithOwner: created,
+      url,
+      visibility: 'PRIVATE',
+      defaultBranchRef: { name: 'main' },
+      description: null,
+    },
+  }
+  writeFileSync(process.env.FAKE_GH_FIXTURES, JSON.stringify(fixtures))
+  process.exit(0)
 }
 
 const slug = slugFromArgs(argv)

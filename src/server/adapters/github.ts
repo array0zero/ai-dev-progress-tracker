@@ -13,6 +13,8 @@ export interface RepoView {
   url: string
   visibility: string
   defaultBranch: string | null
+  /** v2: summary の第一候補。無ければ空文字。 */
+  description: string
 }
 
 export interface IssueRecord {
@@ -45,6 +47,7 @@ const repoViewSchema = z.object({
   url: z.string(),
   visibility: z.string(),
   defaultBranchRef: z.object({ name: z.string() }).nullable(),
+  description: z.string().nullable().default(null),
 })
 
 const issueListSchema = z.array(
@@ -160,6 +163,24 @@ export async function createPrivateRepo(slug: string): Promise<boolean> {
   return result !== null && !result.timedOut && result.code === 0
 }
 
+/**
+ * 自動登録用: 対象 folder を source にして Private repository を作り origin を張る。
+ * 失敗時の retry は registration 全体 retry へ委譲するのでここでは再試行しない。
+ */
+export async function createPrivateRepoFromSource(slug: string, path: string): Promise<boolean> {
+  const result = await runGhOnce([
+    'repo',
+    'create',
+    slug,
+    '--private',
+    '--source',
+    path,
+    '--remote',
+    'origin',
+  ])
+  return result !== null && !result.timedOut && result.code === 0
+}
+
 /** `gh auth setup-git` を実行する (backup clone/push が gh 認証を使うため)。 */
 export async function ensureAuthSetupGit(): Promise<boolean> {
   const result = await runGhOnce(['auth', 'setup-git'])
@@ -172,7 +193,7 @@ export async function viewRepo(slug: string): Promise<RepoViewResult> {
     'view',
     slug,
     '--json',
-    'id,nameWithOwner,url,visibility,defaultBranchRef',
+    'id,nameWithOwner,url,visibility,defaultBranchRef,description',
   ])
   if (result === null || result.timedOut || result.code !== 0) {
     return { ok: false, code: 'GITHUB_CLI_ERROR' }
@@ -189,6 +210,7 @@ export async function viewRepo(slug: string): Promise<RepoViewResult> {
       url: parsed.data.url,
       visibility: parsed.data.visibility,
       defaultBranch: parsed.data.defaultBranchRef?.name ?? null,
+      description: parsed.data.description ?? '',
     },
   }
 }
