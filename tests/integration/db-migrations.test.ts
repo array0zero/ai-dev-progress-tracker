@@ -1,13 +1,13 @@
 import { execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { copyFileSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { copyFileSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { basename, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import Database from 'better-sqlite3'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { openDatabase } from '../../src/server/db/connection.js'
 import { insertProject, type NewProject } from '../../src/server/db/project-repository.js'
-import { createTestDb, type TestDb } from '../helpers/test-db.js'
+import { createTestDb, createV1TestDb, type TestDb } from '../helpers/test-db.js'
 
 const SHA = 'a'.repeat(40)
 
@@ -65,11 +65,13 @@ describe('db migrations v1', () => {
     )
   })
 
-  it('does not re-apply the migration when the database is reopened', () => {
+  it('does not re-apply the migrations when the database is reopened', () => {
     ctx.db.close()
     const reopened = openDatabase(ctx.path)
     try {
-      expect(reopened.prepare('SELECT COUNT(*) FROM schema_migrations').pluck().get()).toBe(1)
+      expect(
+        reopened.prepare('SELECT version FROM schema_migrations ORDER BY version').pluck().all(),
+      ).toEqual([1, 2])
     } finally {
       reopened.close()
     }
@@ -196,6 +198,141 @@ describe('v1 golden fixtures survive a real Git round trip', () => {
       }
     } finally {
       rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('db migration 002 (v2)', () => {
+  it('applies once to an existing v1 database and keeps its rows', () => {
+    const v1 = createV1TestDb()
+    const project = sampleProject()
+    v1.db
+      .prepare(
+        `INSERT INTO projects
+           (id, name, local_path, repo_node_id, repo_owner, repo_name, repo_url, default_branch, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        project.id,
+        project.name,
+        project.localPath,
+        project.repoNodeId,
+        project.repoOwner,
+        project.repoName,
+        project.repoUrl,
+        project.defaultBranch,
+        project.status,
+        '2026-09-01T00:00:00.000Z',
+        '2026-09-01T00:00:00.000Z',
+      )
+    v1.db.close()
+
+    const upgraded = openDatabase(v1.path)
+    try {
+      expect(
+        upgraded.prepare('SELECT version FROM schema_migrations ORDER BY version').pluck().all(),
+      ).toEqual([1, 2])
+
+      const row = upgraded
+        .prepare(
+          'SELECT name, summary, registration_source, review_required, review_required_at FROM projects WHERE id = ?',
+        )
+        .get(project.id) as {
+        name: string
+        summary: string
+        registration_source: string
+        review_required: number
+        review_required_at: string | null
+      }
+      expect(row).toEqual({
+        name: project.name,
+        summary: project.name,
+        registration_source: 'manual',
+        review_required: 0,
+        review_required_at: null,
+      })
+    } finally {
+      upgraded.close()
+    }
+
+    // 再 open しても 002 は再適用されない
+    const reopened = openDatabase(v1.path)
+    try {
+      expect(reopened.prepare('SELECT COUNT(*) FROM schema_migrations').pluck().get()).toBe(2)
+    } finally {
+      reopened.close()
+    }
+
+    v1.cleanup()
+  })
+
+  it('leaves one pre-v2 copy of the v1 database next to it', () => {
+    const v1 = createV1TestDb()
+    v1.db.close()
+
+    const upgraded = openDatabase(v1.path)
+    upgraded.close()
+
+    const copies = readdirSync(dirname(v1.path)).filter((name) =>
+      name.startsWith('tracker.db.pre-v2-'),
+    )
+    expect(copies).toHaveLength(1)
+
+    const preV2 = new Database(join(dirname(v1.path), copies[0] ?? ''), { readonly: true })
+    try {
+      expect(preV2.prepare('SELECT version FROM schema_migrations').pluck().all()).toEqual([1])
+    } finally {
+      preV2.close()
+    }
+    v1.cleanup()
+  })
+
+  it('does not copy anything when creating a fresh v2 database', () => {
+    const ctx = createTestDb()
+    try {
+      expect(readdirSync(dirname(ctx.path)).filter((name) => name.includes('.pre-v2-'))).toEqual([])
+      expect(
+        ctx.db.prepare('SELECT version FROM schema_migrations ORDER BY version').pluck().all(),
+      ).toEqual([1, 2])
+    } finally {
+      ctx.cleanup()
+    }
+  })
+
+  it('creates registration_candidates that starts empty and enforces its constraints', () => {
+    const ctx = createTestDb()
+    try {
+      expect(ctx.db.prepare('SELECT COUNT(*) FROM registration_candidates').pluck().get()).toBe(0)
+
+      const insert = (overrides: Record<string, unknown> = {}): void => {
+        const row = {
+          id: randomUUID(),
+          local_path: '/tmp/candidate',
+          agent: 'codex',
+          status: 'detected',
+          suggested_name: 'candidate',
+          detected_at: '2026-09-02T00:00:00.000Z',
+          last_seen_at: '2026-09-02T00:00:00.000Z',
+          attempt_count: 0,
+          ...overrides,
+        }
+        ctx.db
+          .prepare(
+            `INSERT INTO registration_candidates
+               (id, local_path, agent, status, suggested_name, detected_at, last_seen_at, attempt_count)
+             VALUES (@id, @local_path, @agent, @status, @suggested_name, @detected_at, @last_seen_at, @attempt_count)`,
+          )
+          .run(row)
+      }
+
+      insert()
+      expect(() => insert()).toThrow(/UNIQUE/i)
+      expect(() => insert({ local_path: '/tmp/b', status: 'nope' })).toThrow(/CHECK/i)
+      expect(() => insert({ local_path: '/tmp/c', attempt_count: 3 })).toThrow(/CHECK/i)
+      expect(() => insert({ local_path: '/tmp/d', agent: 'gemini' })).toThrow(/CHECK/i)
+      expect(() => insert({ local_path: '/tmp/e', suggested_name: '' })).toThrow(/CHECK/i)
+    } finally {
+      ctx.cleanup()
     }
   })
 })
