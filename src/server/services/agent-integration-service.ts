@@ -40,6 +40,11 @@ function defaultCliPath(): string {
   return resolve(fileURLToPath(new URL('../../cli/index.js', import.meta.url)))
 }
 
+/** agent-event が起動する server entry。CLI と同じ build tree を指す。 */
+export function defaultServerEntry(): string {
+  return resolve(fileURLToPath(new URL('../index.js', import.meta.url)))
+}
+
 export function resolveIntegration(options: AgentIntegrationOptions = {}): ResolvedIntegration {
   const home = options.home ?? homedir()
   return {

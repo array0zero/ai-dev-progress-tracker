@@ -1,4 +1,5 @@
 import { parseArgs } from 'node:util'
+import { type AgentEventArgs, runAgentEvent } from './commands/agent-event.js'
 import { runDoctor } from './commands/doctor.js'
 import { runHookBackup } from './commands/hook-backup.js'
 import { type HookCommitArgs, runHookCommit } from './commands/hook-commit.js'
@@ -44,6 +45,18 @@ async function dispatch(argv: readonly string[]): Promise<number> {
         return 2
       }
       return runHookBackup(parsed)
+    }
+    case 'agent-event': {
+      const { values, positionals } = parseArgs({
+        args: [...rest],
+        options: { agent: { type: 'string' }, input: { type: 'string' } },
+        allowPositionals: true,
+        strict: false,
+      })
+      const agent = values.agent === 'claude' ? 'claude' : 'codex'
+      const input = values.input === 'stdin' ? 'stdin' : 'argv'
+      const args: AgentEventArgs = { agent, input, payload: positionals.join(' ') }
+      return runAgentEvent(args)
     }
     case 'setup-agents': {
       const { values } = parseArgs({

@@ -49,3 +49,14 @@ export function createTempRepo(options: TempRepoOptions = {}): TempRepo {
     cleanup: () => rmSync(parent, { recursive: true, force: true }),
   }
 }
+
+export interface TempDir {
+  root: string
+  cleanup: () => void
+}
+
+/** Git 管理外の一時フォルダ。agent-event の「Git 外なら cwd を canonical path」経路で使う。 */
+export function createTempDir(prefix = 'adpt-plain-'): TempDir {
+  const root = mkdtempSync(join(tmpdir(), prefix))
+  return { root, cleanup: () => rmSync(root, { recursive: true, force: true }) }
+}
