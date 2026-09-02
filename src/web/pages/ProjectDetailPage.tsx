@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import type { DecisionView, ProjectDetailV2 } from '../../shared/api.js'
 import { ApiError, fetchProject, recoverProject, setProjectReview } from '../api/client.js'
 import { EvidenceList } from '../components/EvidenceList.js'
+import { ProgressHistory } from '../components/ProgressHistory.js'
 import { ProgressSection } from '../components/ProgressSection.js'
 import { ReviewControls } from '../components/ReviewControls.js'
 import { StatusBanner } from '../components/StatusBanner.js'
@@ -141,6 +142,8 @@ export function ProjectDetailPage({ projectId }: ProjectDetailPageProps) {
           />
         </article>
       ) : null}
+
+      {detail !== null ? <ProgressHistory projectId={projectId} /> : null}
     </main>
   )
 }

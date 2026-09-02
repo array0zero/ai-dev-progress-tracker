@@ -96,6 +96,20 @@ export interface ProjectDetail extends ProjectSummary {
 
 export interface ProjectDetailV2 extends ProjectDetail, ProjectSummaryV2 {}
 
+export interface ProgressHistoryItem {
+  snapshotId: string
+  commitSha: string
+  recoveryStatus: ProgressRecoveryStatus
+  createdAt: string
+  currentPosition: string | null
+  nextActions: string[]
+}
+
+export interface ProgressHistoryPage {
+  items: ProgressHistoryItem[]
+  nextCursor: string | null
+}
+
 export interface RegisterProjectRequestBody {
   name: string
   localPath: string

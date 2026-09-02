@@ -3,6 +3,7 @@ import type { FastifyPluginAsync } from 'fastify'
 import type {
   ApiErrorBody,
   DecisionView,
+  ProgressHistoryPage,
   ProjectDetail,
   ProjectSummary,
   ProjectSummaryV2,
@@ -12,6 +13,7 @@ import type { Db } from '../db/connection.js'
 import {
   getLatestProgress,
   getLatestSnapshotByProject,
+  listSnapshotHistory,
   readSnapshotView,
   resolveEvidence,
 } from '../db/progress-repository.js'
@@ -240,6 +242,43 @@ export function projectRoutes(db: Db): FastifyPluginAsync {
         return reply.code(result.status).send(errorBody(result.code, result.message))
       }
       return reply.code(201).send(result.project)
+    })
+
+    // 進捗履歴。newest-first、default 20 / max 100、cursor は created_at|id。
+    app.get('/projects/:id/history', async (request, reply) => {
+      const { id } = request.params as { id: string }
+      const query = request.query as { limit?: string; before?: string }
+      if (getProjectById(db, id) === null) {
+        return reply.code(404).send(errorBody('PROJECT_NOT_FOUND', 'Project not found.'))
+      }
+      const limit = query.limit === undefined ? 20 : Number(query.limit)
+      if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+        return reply
+          .code(400)
+          .send(errorBody('INVALID_REQUEST', 'limit must be between 1 and 100.'))
+      }
+      const page = listSnapshotHistory(db, id, limit, query.before ?? null)
+      const body: ProgressHistoryPage = {
+        items: page.items.map((snapshot) => {
+          const view = readSnapshotView(snapshot)
+          return {
+            snapshotId: snapshot.id,
+            commitSha: snapshot.commitSha,
+            recoveryStatus: snapshot.recoveryStatus,
+            createdAt: snapshot.createdAt,
+            currentPosition:
+              view === null || view.currentPosition.status === 'needs_input'
+                ? null
+                : view.currentPosition.text,
+            nextActions:
+              view === null || view.nextActions.status === 'needs_input'
+                ? []
+                : view.nextActions.items.map((item) => item.text),
+          }
+        }),
+        nextCursor: page.nextCursor,
+      }
+      return body
     })
 
     // 要確認フラグ。regenerate では自動解除せず、利用者の false 操作でだけ消す (D012)。

@@ -265,3 +265,132 @@ test('does not start a regeneration for a project without a HEAD commit', async 
     page.getByRole('region', { name: '要確認と再生成' }).getByLabel('要確認'),
   ).toBeChecked()
 })
+
+function seedHistory(projectId: string, count: number): string[] {
+  const db = openDatabase(DB_PATH)
+  const shas: string[] = []
+  try {
+    const seed = db.transaction(() => {
+      for (let index = 0; index < count; index += 1) {
+        const sha = randomUUID().replace(/-/g, '') + randomUUID().replace(/-/g, '').slice(0, 8)
+        shas.push(sha)
+        upsertCommit(db, {
+          projectId,
+          sha,
+          parentSha: null,
+          message: `history ${index}`,
+          authoredAt: '2026-09-01T00:00:00.000Z',
+          detectedAt: `2026-09-01T00:${String(index).padStart(2, '0')}:00.000Z`,
+        })
+        const runId = randomUUID()
+        db.prepare(
+          `INSERT INTO generation_runs (id, dedupe_key, project_id, commit_sha, mode, trigger, status, detected_at)
+           VALUES (?, ?, ?, ?, 'generation', 'post_commit', 'succeeded', ?)`,
+        ).run(
+          runId,
+          `generation:${projectId}:${sha}`,
+          projectId,
+          sha,
+          `2026-09-01T00:${String(index).padStart(2, '0')}:01.000Z`,
+        )
+        insertSnapshot(
+          db,
+          {
+            id: randomUUID(),
+            generationRunId: runId,
+            projectId,
+            commitSha: sha,
+            recoveryStatus: 'complete',
+            currentPosition: {
+              status: 'confirmed',
+              text: `履歴 ${index} の現在地`,
+              evidenceIds: [],
+            },
+            completedItems: { status: 'needs_input', items: [], evidenceIds: [] },
+            nextActions: { status: 'needs_input', items: [], evidenceIds: [] },
+            decisions: { status: 'needs_input', items: [], evidenceIds: [] },
+          },
+          new Date(`2026-09-01T00:${String(index).padStart(2, '0')}:02.000Z`),
+        )
+      }
+    })
+    seed()
+  } finally {
+    db.close()
+  }
+  return shas
+}
+
+test('keeps the current state above a separate history section', async ({ page }) => {
+  const projectId = seedProject('History One')
+  seedHistory(projectId, 1)
+
+  await page.goto(`/projects/${projectId}`)
+
+  const current = page.getByRole('article', { name: 'History One' })
+  const history = page.getByRole('region', { name: '進捗履歴' })
+  await expect(current).toBeVisible()
+  await expect(history).toBeVisible()
+  await expect(history.getByRole('heading', { name: '進捗履歴' })).toBeVisible()
+
+  // 現在の状態は履歴 section の中にネストされない
+  await expect(current.getByRole('region', { name: '進捗履歴' })).toHaveCount(0)
+  await expect(history.getByRole('heading', { name: 'History One' })).toHaveCount(0)
+
+  const currentBox = await current.boundingBox()
+  const historyBox = await history.boundingBox()
+  expect(currentBox?.y ?? 0).toBeLessThan(historyBox?.y ?? 0)
+})
+
+test('shows the current section and an empty history when there are no snapshots', async ({
+  page,
+}) => {
+  const projectId = seedProject('History Empty')
+
+  await page.goto(`/projects/${projectId}`)
+  await expect(page.getByRole('article', { name: 'History Empty' })).toBeVisible()
+  const history = page.getByRole('region', { name: '進捗履歴' })
+  await expect(history).toContainText('履歴なし')
+})
+
+test('paginates 21 snapshots as 20 plus one more page', async ({ page, request }) => {
+  const projectId = seedProject('History Many')
+  const shas = seedHistory(projectId, 21)
+
+  await page.goto(`/projects/${projectId}`)
+  const history = page.getByRole('region', { name: '進捗履歴' })
+  await expect(history.locator('.progress-history__item')).toHaveCount(20)
+
+  await history.getByRole('button', { name: 'さらに読み込む' }).click()
+  await expect(history.locator('.progress-history__item')).toHaveCount(21)
+  await expect(history.getByRole('button', { name: 'さらに読み込む' })).toHaveCount(0)
+
+  // API から取り直した順序と commit SHA が一致する (newest-first)
+  const first = await request.get(`/api/projects/${projectId}/history?limit=20`)
+  const firstPage = (await first.json()) as {
+    items: Array<{ commitSha: string }>
+    nextCursor: string | null
+  }
+  expect(firstPage.items).toHaveLength(20)
+  expect(firstPage.items[0]?.commitSha).toBe(shas[20])
+  expect(firstPage.nextCursor).not.toBeNull()
+
+  const second = await request.get(
+    `/api/projects/${projectId}/history?limit=20&before=${encodeURIComponent(firstPage.nextCursor ?? '')}`,
+  )
+  const secondPage = (await second.json()) as {
+    items: Array<{ commitSha: string }>
+    nextCursor: string | null
+  }
+  expect(secondPage.items).toHaveLength(1)
+  expect(secondPage.items[0]?.commitSha).toBe(shas[0])
+  expect(secondPage.nextCursor).toBeNull()
+})
+
+test('rejects an out-of-range history limit and an unknown project', async ({ request }) => {
+  const projectId = seedProject('History Limits')
+  const tooLarge = await request.get(`/api/projects/${projectId}/history?limit=101`)
+  expect(tooLarge.status()).toBe(400)
+  const unknown = await request.get('/api/projects/does-not-exist/history')
+  expect(unknown.status()).toBe(404)
+})

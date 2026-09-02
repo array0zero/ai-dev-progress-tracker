@@ -1,5 +1,6 @@
 import type {
   ApiErrorBody,
+  ProgressHistoryPage,
   ProjectDetail,
   ProjectSummary,
   RegisterProjectRequestBody,
@@ -126,4 +127,21 @@ export async function setProjectReview(id: string, required: boolean): Promise<R
     throw await toApiError(response)
   }
   return (await response.json()) as ReviewState
+}
+
+export async function fetchProgressHistory(
+  id: string,
+  before?: string,
+): Promise<ProgressHistoryPage> {
+  const params = new URLSearchParams({ limit: '20' })
+  if (before !== undefined) {
+    params.set('before', before)
+  }
+  const response = await fetch(
+    `/api/projects/${encodeURIComponent(id)}/history?${params.toString()}`,
+  )
+  if (!response.ok) {
+    throw await toApiError(response)
+  }
+  return (await response.json()) as ProgressHistoryPage
 }

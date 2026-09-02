@@ -336,3 +336,53 @@ export function listRunEvidencePayloads(db: Db, runId: string): unknown[] {
     .all(runId) as Array<{ payload_json: string }>
   return rows.map((row) => JSON.parse(row.payload_json))
 }
+
+export interface SnapshotHistoryPage {
+  items: ProgressSnapshotRecord[]
+  nextCursor: string | null
+}
+
+/** cursor は `created_at|id` の複合。同一 created_at でも安定して次ページへ進める。 */
+export function historyCursor(snapshot: ProgressSnapshotRecord): string {
+  return `${snapshot.createdAt}|${snapshot.id}`
+}
+
+/**
+ * 進捗履歴を newest-first で返す (DESIGN D018)。
+ * `before` は同じ形式の cursor で、それより古い snapshot だけを返す。
+ */
+export function listSnapshotHistory(
+  db: Db,
+  projectId: string,
+  limit: number,
+  before: string | null,
+): SnapshotHistoryPage {
+  const [beforeCreatedAt, beforeId] = (before ?? '').split('|')
+  const rows = (
+    before === null
+      ? db
+          .prepare(
+            `SELECT ${SELECT_COLUMNS} FROM progress_snapshots
+             WHERE project_id = ?
+             ORDER BY created_at DESC, id DESC
+             LIMIT ?`,
+          )
+          .all(projectId, limit + 1)
+      : db
+          .prepare(
+            `SELECT ${SELECT_COLUMNS} FROM progress_snapshots
+             WHERE project_id = ?
+               AND (created_at < ? OR (created_at = ? AND id < ?))
+             ORDER BY created_at DESC, id DESC
+             LIMIT ?`,
+          )
+          .all(projectId, beforeCreatedAt, beforeCreatedAt, beforeId, limit + 1)
+  ) as ProgressSnapshotRow[]
+
+  const page = rows.slice(0, limit).map(rowToSnapshot)
+  const last = page.at(-1)
+  return {
+    items: page,
+    nextCursor: rows.length > limit && last !== undefined ? historyCursor(last) : null,
+  }
+}

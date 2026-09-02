@@ -344,3 +344,37 @@ body {
 .manual-register .register-form {
   margin-top: 8px;
 }
+
+.review-controls {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin: 12px 0;
+}
+
+.progress-history {
+  margin-top: 24px;
+}
+
+.progress-history__divider {
+  border: 0;
+  border-top: 1px solid #d7dae0;
+  margin: 0 0 16px;
+}
+
+.progress-history__list {
+  margin: 0;
+  padding-left: 1.2rem;
+}
+
+.progress-history__item {
+  display: flex;
+  gap: 12px;
+  padding: 4px 0;
+  font-size: 0.85rem;
+}
+
+.progress-history__sha {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #6b7280;
+}
