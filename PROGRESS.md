@@ -29,5 +29,45 @@ v1.3〜v1.7 (T001〜T020) の記録は `PROGRESS-v1.md` を参照。
 | T021 | 完了 | 2026-09-02 | commit SHA: 75aa534。`scripts/eval-ui-performance.ts` + `npm run eval:ui`。OS tempのTRACKER_DATA_DIRと`TRACKER_PORT=4318`固定(使用中はfailし別portへ逃げない)、実temp Git repo 8件を作りそのHEADでproject/commit/snapshotをseed(現在地・次の作業は実利用に近い長文)。Playwright viewport `2005x1271`。計測はnavigation開始→8行visible=`initialRenderMs`、検索input→結果確定=`searchMs`、filter click→結果確定=`filterMs`。計測前に実Gitの`rev-parse HEAD`とAPIの`latestCommitSha`、DOMのproject名一致を確認(外部往復)。`--dry-run`はseed/server/identity確認まで、`--empty`は0件mode。結果はstdoutへJSON。本taskではobserved fixtureを作らない。対象repoのDB/fileへは書かない。検証: `npm run eval:ui -- --dry-run` 成功、1 run計測と0件modeも成功。実装メモ: Windowsでserverが SQLite を掴んだままだとtemp削除がEPERMになるため、kill後にexitを待ってからretry付きで削除する。 |
 | T022 | 完了 | 2026-09-02 | commit SHA: 75aa534。`--record`(= `npm run eval:ui:record`)で5 run + 0件runを実測し、その出力をそのまま`tests/fixtures/ui-performance-observed.json`へ書き込む(手書きなし)。threshold(initial<=2000ms / search<=500ms / filter<=500ms)は事前固定、実測値は固定しない。**実測結果**: initialRenderMs = 171/246/174/165/200、searchMs = 12/11/11/12/12、filterMs = 37/34/35/34/31、0件run = 111/20/44。5/5 runがthreshold以下で`pass: true`。dashboard e2eへfixtureのthreshold回帰(5 run + 0件run + viewport 2005x1271 + threshold値)を追加。検証: e2e 33件・lint 通過。 |
 | T023 | 完了 | 2026-09-02 | commit SHA: d2703ef。`verify:secrets`の走査対象をDB全ファイル + backup-v2 raw export + `.env.example`へ拡張し、agent event本文(prompt / assistant message / transcript path / session id)のsentinelを追加(16 sentinel / 4 target)。agent-eventをhandler経由で実行してからDB・logを走査し0件を確認。network SaaS SDK(openai / @anthropic-ai / @octokit / aws-sdk / sentry / datadog / segment / posthog / stripe / firebase / supabase等)がdependenciesに無いこともgate化。Codex child envのscrubへ`ANTHROPIC_API_KEY` / `GH_TOKEN` / `GITHUB_TOKEN`を追加(従来はOPENAI_*のみ)。`redaction.test.ts`へ偽token 8種のnegative gate(混入すればscannerが必ず検知し、redaction後は非検知)を追加。`backup-v2.test.ts`へ「commit message中のtoken・worker_leases owner token・backup_runs・auth系keyがbackupへ出ない」回帰を追加。READMEへ使用外部service表(GitHub / 既契約Codex / 既存Claude Code)と追加固定費0円・従量課金0円、SaaS SDK非追加、child env scrub、agent本文非保存を明記。検証: `npm run verify:secrets`(hit 0 / forbiddenDependencies 0)、`test:unit -- redaction`、`test:integration -- backup-v2`、全体test 292件、lint/typecheck 通過。 |
-| T024 | 完了 | 2026-09-02 | commit SHA: __T024SHA__。READMEへ `setup:agents` / `--repair` / `--uninstall` / `doctor` / 自動登録と手動登録の手順、Codex notify chain(既存notifyを消さず退避・復元。chainできない形のときだけ`CODEX_NOTIFY_CONFLICT`)、`CLAUDE_HOOKS_DISABLED`、`AGENT_HOOK_PATH_STALE`の解決手順、実機script一覧と隔離条件、版数下限(Node/npmは上限なし、Claude Code >=2.1.258追加)、dependencies 7件(smol-toml追加)、CI 13手順(verify:secrets追加)を反映。`AGENTS.md`と`CLAUDE.md`はSHA-256一致。T009/T010/T011/T017/T018/T022がPROGRESS上「完了」であることを確認。検証: `npm run test:all`(lint→typecheck→test 292件→build→e2e 33件)通過、`npm run verify:secrets` hit 0件・forbiddenDependencies 0件、`Get-FileHash AGENTS.md/CLAUDE.md` 一致。 |
-| T025 | 未着手 | 2026-09-02 | 手動確認（最終タスク） |
+| T024 | 完了 | 2026-09-02 | commit SHA: 615d864。READMEへ `setup:agents` / `--repair` / `--uninstall` / `doctor` / 自動登録と手動登録の手順、Codex notify chain(既存notifyを消さず退避・復元。chainできない形のときだけ`CODEX_NOTIFY_CONFLICT`)、`CLAUDE_HOOKS_DISABLED`、`AGENT_HOOK_PATH_STALE`の解決手順、実機script一覧と隔離条件、版数下限(Node/npmは上限なし、Claude Code >=2.1.258追加)、dependencies 7件(smol-toml追加)、CI 13手順(verify:secrets追加)を反映。`AGENTS.md`と`CLAUDE.md`はSHA-256一致。T009/T010/T011/T017/T018/T022がPROGRESS上「完了」であることを確認。検証: `npm run test:all`(lint→typecheck→test 292件→build→e2e 33件)通過、`npm run verify:secrets` hit 0件・forbiddenDependencies 0件、`Get-FileHash AGENTS.md/CLAUDE.md` 一致。 |
+| T025 | 進行中 | 2026-09-02 | 自動確認できる項目(#1の環境記録・#2 version/認証・#3 empty data dir起動・#18/#19 restore往復・#20 secret scan・#21 性能5run・#23のservice/依存確認)は実測して下表へ記録済み。残る#4〜#17・#22と請求画面の確認は利用者の操作が必要なため未実施。1件でも未実施のためT025は完了にしない。 |
+
+## T025 手動確認チェックリスト
+
+自動で確認できた項目はここに実測値を記録済み。残りは利用者の操作が必要。
+
+### 自動確認済み (2026-09-02)
+
+| # | 項目 | 結果 |
+|---:|---|---|
+| 1 | Windows edition/build、browser | Windows 11 Home / 10.0.26200 (25H2)。E2E は Playwright 同梱 Chromium (`@playwright/test` 1.62.1)。実利用ブラウザ候補: Google Chrome 151.0.7922.174。**実利用ブラウザでの受入は利用者が実施** |
+| 2 | version / 認証 | Node 24.15.0 / npm 12.0.2 / Git 2.45.1 / gh 2.98.0 (認証済) / Codex 0.152.1 (ChatGPT 認証) / Claude Code 2.1.258 (`auth status` loggedIn)。`doctor` は検知未導入の WARN のみで exit 0。token 本文は記録していない |
+| 3 | empty data dir で起動 | temp data dir + port 4320 で `npm start` 相当を実行し `/api/health` 200、`/api/projects` `[]`、異常終了なし |
+| 18 | v1 backup/DB を v2 へ restore | `backup-v2.test.ts` の v1 restore で論理項目欠損 0 件、v2 列は既定値 (summary=name / manual / 0) |
+| 19 | v2 backup → Private GitHub → fresh restore | `npm run real:backup-restore` PASS。fixture repo へ push → fresh clone → checksum 一致 → restore で project / candidate 完全一致。`unreflected` は derived 再計算で一致 |
+| 20 | secret scan | `npm run verify:secrets` hit 0 件 / sentinel 16 / forbiddenDependencies 0 件 |
+| 21 | dashboard 性能 5 run | `npm run eval:ui:record` で 5/5 が threshold 以下。initial 165-246ms (<=2000ms)、search 11-12ms・filter 31-37ms (<=500ms)、0 件 run も threshold 以下 |
+| 23 | 利用service / 課金 | 使用は GitHub (既存 gh 認証) / 既契約 Codex / 既存 Claude Code のみ。SaaS SDK 依存 0 件を `verify:secrets` で機械確認。**請求画面での 0 円確認は利用者が実施** |
+
+### 利用者の操作が必要 (未実施)
+
+| # | 操作 | 期待結果 |
+|---:|---|---|
+| 4 | 未登録 folder で Codex を 1 回動かす | 1st turn 完了までに登録確認が開く (先に `npm run setup:agents`) |
+| 5 | 未登録 folder で Claude Code を 1 回動かす | 最初の prompt 処理中に登録確認が開く |
+| 6 | 登録確認で「登録しない」 | project 自動登録 0 件 |
+| 7 | GitHub repo なし・commit なしを承認 | Private repo + origin、push なし、project 登録 |
+| 8 | GitHub repo なし・commit ありを承認 | Private repo + origin + 初回 push、remote SHA = local HEAD |
+| 9 | 登録を意図的に 2 回失敗させる | 1 回 auto retry 後に failed candidate 表示、手動登録導線あり |
+| 10 | 8 件 dashboard を 2005x1271 で表示 | 通常状態で 8 件が 1 画面、各行に名前/現在地/次/最終更新 |
+| 11 | dense ↔ compact 切替 | DB 管理 data 不変、reload で view mode だけ復元 |
+| 12 | name/keyword 検索 + 3 state filter | 一致対象だけ表示、空 query 全件、0 件状態も正常 |
+| 13 | 8 件から次 project 選択を 5 回 | 4/5 以上で 30 秒以内、各回 detail 遷移 <= 1 |
+| 14 | snapshot 後に新 commit | 未反映表示 → 再生成後に snapshot SHA = HEAD で解除 |
+| 15 | 要確認 → 再生成 | 要確認 filter 対象、実 Codex 再生成が開始。成功後も要確認は自動解除されない |
+| 16 | detail の current / history | current が上部の独立 section、history に埋もれない |
+| 17 | commit → generation、push → backup | commit で生成、push だけでは generation run 増加 0 件 |
+| 22 | 主要受入フローを 5 回連続 | app 異常終了 0 回 |
+| 23 | 課金画面の確認 | 追加固定費 0 円/月、追加従量課金 0 円/月 |
+
+利用者が実施したら、結果をこの表へ追記して T025 を完了にする。
