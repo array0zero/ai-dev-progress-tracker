@@ -16,17 +16,19 @@
 
 | ツール | バージョン条件 |
 |--------|----------------|
-| Node.js | `>=24.15.0 <25` |
-| npm | `12.0.2` (完全一致) |
+| Node.js | `>=24.15.0` (上限なし) |
+| npm | `>=12.0.2` (上限なし) |
 | Git | `>=2.45.0` |
 | GitHub CLI (`gh`) | `>=2.98.0` |
-| Codex CLI | `>=0.146.0` (model `gpt-5.6-terra` / 認証は `Logged in using ChatGPT` のみ) |
+| Codex CLI | `>=0.152.0` (model `gpt-5.6-terra` / 認証は `Logged in using ChatGPT` のみ) |
+| Claude Code | `>=2.1.258` (未登録フォルダ検知の hook のみ。AI 生成には使いません) |
 
-npm パッケージは **範囲指定子 (`^` / `~`) を付けず完全一致で固定**しています。
-`package.json` の `packageManager` は `npm@12.0.2`、`package-lock.json` は commit 済みです。
+ランタイムと外部 CLI は **下限のみ**を指定し、上限は設けません。
+npm パッケージは **範囲指定子 (`^` / `~`) を付けず完全一致で固定**しています
+(`package-lock.json` は commit 済み)。
 
-- `dependencies` (6): `@fastify/static` 10.1.3 / `better-sqlite3` 13.0.3 / `fastify` 5.12.1 /
-  `react` 19.2.8 / `react-dom` 19.2.8 / `zod` 4.5.4
+- `dependencies` (7): `@fastify/static` 10.1.3 / `better-sqlite3` 13.0.3 / `fastify` 5.12.1 /
+  `react` 19.2.8 / `react-dom` 19.2.8 / `smol-toml` 1.8.0 / `zod` 4.5.4
 - `devDependencies` (11): `@biomejs/biome` 2.5.11 / `@playwright/test` 1.62.1 /
   `@types/better-sqlite3` 9.6.0 / `@types/node` 24.13.3 / `@types/react` 19.2.18 /
   `@types/react-dom` 19.2.5 / `@vitejs/plugin-react` 6.1.1 / `tsx` 4.23.13 /
@@ -74,17 +76,54 @@ npm start                    # http://127.0.0.1:4317 で起動する
 データ (SQLite / ログ) の保存先は既定で `~/.ai-dev-progress-tracker/` です
 (`tracker.db`、`logs/app.log`、`backup-repo/`)。
 
+### 2.4 Codex / Claude Code の検知設定
+
+未登録フォルダを Codex / Claude Code の作業から検知するため、ユーザー設定へ tracker の
+エントリを 1 件ずつ入れます。**先に `npm run build` が必要**です (設定には
+`dist/cli/index.js` の絶対パスを書き込むため)。
+
+```bash
+npm run setup:agents                        # Codex notify + Claude UserPromptSubmit hook を導入
+node dist/cli/index.js setup-agents --repair    # リポジトリを移動した後にパスだけ貼り直す
+node dist/cli/index.js setup-agents --uninstall # tracker のエントリだけ取り除く
+node dist/cli/index.js doctor                   # codexDetection / claudeDetection が ready か確認
+```
+
+- **Codex に別の `notify` が既にある場合** (例: Codex computer-use が自動設定するもの) は
+  削除しません。既存の値を managed block 内へ退避したうえで **chain** します。
+  tracker のハンドラは最初に既存 notify を起動し (結果は待ちません)、そのまま検知を続けます。
+  `setup-agents --uninstall` で元の `notify` 行がそのまま書き戻ります。
+  既存 `notify` が文字列配列でなく chain できない形のときだけ `CODEX_NOTIFY_CONFLICT` で
+  **何も変更せず** 停止します。その場合は既存値を配列形式へ直してから再実行してください。
+- **Claude の設定で `disableAllHooks: true` の場合**は `CLAUDE_HOOKS_DISABLED` で停止し、
+  `~/.claude/settings.json` を変更しません。hook を有効にしてから再実行してください。
+- **`AGENT_HOOK_PATH_STALE`** (リポジトリを移動した / 別の場所へ clone し直した) は
+  `setup-agents --repair` で解消します。退避済みの既存 notify は保持されます。
+- ハンドラが保存するのは **event 種別と cwd だけ**です。prompt 本文や transcript path は
+  保存しません。内部エラーでも Codex / Claude 本体を失敗させません (常に exit 0)。
+
 ---
 
 ## 3. プロジェクトを登録する
 
+### 3.1 自動登録 (Codex / Claude Code の作業から)
+
+`setup:agents` 済みなら、未登録フォルダで Codex / Claude Code を動かした時点で
+登録確認がブラウザで開きます。「登録する」を選ぶと、Git 未初期化なら `git init -b main`、
+GitHub repository が無ければ Private で作成して `origin` を張り、commit があれば初回 push まで
+行って登録します。失敗した候補は消えず、dashboard の「未登録の候補」からやり直し / 手動登録できます
+(自動再試行は 2 秒後に 1 回だけ)。
+
+### 3.2 手動登録
+
 1. `npm start` で起動し、`http://127.0.0.1:4317` を開きます。
-2. 「プロジェクトを登録」フォームに入力します。
+2. dashboard 下部の「手動で登録」を開きます。
+3. フォームに入力します。
    - **プロジェクト名**: dashboard 上の表示名。
    - **ローカルパス**: Git リポジトリの **ルート** (`.git` があるディレクトリ)。
      linked worktree や `core.hooksPath` 設定済みのリポジトリは未対応です。
    - **リポジトリ**: `owner/repo` 形式。`origin` remote と一致している必要があります。
-3. 登録すると `post-commit` / `pre-push` フックが自動で設置され、
+4. 登録すると `post-commit` / `pre-push` フックが自動で設置され、
    スナップショットが無いため復元用の生成 run が 1 件 enqueue されます。
 
 1 つのプロジェクトに複数の GitHub リポジトリは紐付けできません。
@@ -180,9 +219,20 @@ npm run cli -- restore --force   # 既存 DB を .pre-restore-<timestamp> へ退
 | `npm run test:all` | lint → typecheck → test → build → E2E |
 | `npm run lint` / `npm run typecheck` | Biome / tsc |
 | `npm run verify:secrets` | sentinel secret を置いて DB / ログ / backup export を走査し 0 件を確認 |
-| `npm run cli -- doctor` | 外部 CLI の health check |
+| `npm run cli -- doctor` | 外部 CLI の版数 / 認証 / 検知設定の health check |
+| `npm run setup:agents` | Codex notify + Claude hook の導入 (`--repair` / `--uninstall` は CLI 直呼び) |
 | `npm run eval:generation -- --repo <abs-git-root>` | 実 Codex での生成品質評価 (CI では実行しない) |
 | `npm run eval:recovery` | 実 Codex での復元品質評価 (CI では実行しない) |
+| `npm run eval:ui` / `npm run eval:ui:record` | UI 性能の計測 / 5 run 実測を fixture へ記録 (CI では実行しない) |
+| `npm run real:codex-detection` | 実 Codex での未登録フォルダ検知 (temp のみ / CI では実行しない) |
+| `npm run real:claude-detection` | 実 Claude Code での未登録フォルダ検知 (temp のみ / CI では実行しない) |
+| `npm run real:github-registration` | 実 GitHub での Private repo 作成 / 初回 push (専用 fixture repo のみ) |
+| `npm run real:backup-restore` | 実 GitHub での backup-v2 → clone → restore (専用 fixture repo のみ) |
+| `npm run real:regeneration` | 実 Codex での再生成と鮮度確認 (temp のみ / CI では実行しない) |
+
+実機スクリプトは CI では実行しません。GitHub を触るものは専用の Private fixture repository
+(`ai-dev-progress-tracker-e2e-fixture` / `ai-dev-progress-tracker-backup-e2e-fixture`) だけを使い、
+production の backup repository と利用者のプロジェクトは変更しません。
 
 E2E を含む初回は Chromium が必要です:
 
@@ -199,8 +249,8 @@ npx playwright install --with-deps chromium
 1. `actions/checkout@v7.0.1`
 2. `actions/setup-node@v7.0.0` (`node-version: 24.15.0`, `cache: npm`)
 3. `npm install --global npm@12.0.2`
-4. `npm --version` が `12.0.2` 完全一致であることを検証
-5. `process.versions.node` が `>=24.15.0 <25` であることを検証
+4. `npm --version` が下限 `>=12.0.2` を満たすことを検証
+5. `process.versions.node` が下限 `>=24.15.0` を満たすことを検証
 6. `npm ci`
 7. `npx playwright install --with-deps chromium`
 8. `npm run lint`
@@ -208,6 +258,7 @@ npx playwright install --with-deps chromium
 10. `npm test`
 11. `npm run build`
 12. `npm run test:e2e`
+13. `npm run verify:secrets`
 
 CI では実 `gh` / 実 `codex` を呼びません (`tests/helpers/fake-gh.ts` /
 `tests/helpers/fake-codex.ts` を使用)。
