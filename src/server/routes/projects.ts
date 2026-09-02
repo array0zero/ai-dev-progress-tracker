@@ -15,9 +15,14 @@ import {
   readSnapshotView,
   resolveEvidence,
 } from '../db/progress-repository.js'
-import { getProjectById, listProjects, type ProjectRecord } from '../db/project-repository.js'
+import {
+  getProjectById,
+  listProjects,
+  type ProjectRecord,
+  setProjectReviewRequired,
+} from '../db/project-repository.js'
 import { getLatestCommit, getLatestGenerationRun } from '../db/run-repository.js'
-import { registerProjectRequestSchema } from '../schemas/project.js'
+import { registerProjectRequestSchema, reviewRequestSchema } from '../schemas/project.js'
 import { computeFreshness, readHeads, syncLocalMissing } from '../services/freshness-service.js'
 import { startGenerationWorker } from '../services/generation-service.js'
 import { type RegisterProjectResult, registerProject } from '../services/project-service.js'
@@ -235,6 +240,24 @@ export function projectRoutes(db: Db): FastifyPluginAsync {
         return reply.code(result.status).send(errorBody(result.code, result.message))
       }
       return reply.code(201).send(result.project)
+    })
+
+    // 要確認フラグ。regenerate では自動解除せず、利用者の false 操作でだけ消す (D012)。
+    app.patch('/projects/:id/review', async (request, reply) => {
+      const { id } = request.params as { id: string }
+      const parsed = reviewRequestSchema.safeParse(request.body)
+      if (!parsed.success) {
+        return reply.code(400).send(errorBody('INVALID_REQUEST', 'Request body is invalid.'))
+      }
+      const updated = setProjectReviewRequired(db, id, parsed.data.required)
+      if (updated === null) {
+        return reply.code(404).send(errorBody('PROJECT_NOT_FOUND', 'Project not found.'))
+      }
+      return {
+        projectId: updated.id,
+        reviewRequired: updated.reviewRequired,
+        reviewRequiredAt: updated.reviewRequiredAt,
+      }
     })
 
     app.post('/projects/:id/recover', async (request, reply) => {

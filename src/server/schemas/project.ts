@@ -10,3 +10,9 @@ export const registerProjectRequestSchema = z.object({
 })
 
 export type RegisterProjectRequest = z.infer<typeof registerProjectRequestSchema>
+
+export const reviewRequestSchema = z.object({
+  required: z.boolean(),
+})
+
+export type ReviewRequest = z.infer<typeof reviewRequestSchema>

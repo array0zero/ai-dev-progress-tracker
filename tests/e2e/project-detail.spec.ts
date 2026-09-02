@@ -200,3 +200,68 @@ test('renders a project with 100 evidence items within 2 seconds', async ({ page
   expect(apiMs).toBeLessThan(2000)
   expect(totalMs).toBeLessThan(2000)
 })
+
+test('toggles the review flag from the detail page and reflects it on the dashboard', async ({
+  page,
+  request,
+}) => {
+  const projectId = seedProject('Review Toggle')
+
+  await page.goto(`/projects/${projectId}`)
+  const controls = page.getByRole('region', { name: '要確認と再生成' })
+  const flag = controls.getByLabel('要確認')
+  await expect(flag).not.toBeChecked()
+
+  await flag.check()
+  await expect(flag).toBeChecked()
+
+  // HTTP 側の読み直しと dashboard 表示が一致する
+  const detail = await request.get(`/api/projects/${projectId}`)
+  const body = (await detail.json()) as { reviewRequired: boolean; reviewRequiredAt: string | null }
+  expect(body.reviewRequired).toBe(true)
+  expect(body.reviewRequiredAt).not.toBeNull()
+
+  await page.goto('/')
+  await expect(
+    page.getByRole('article', { name: 'Review Toggle' }).getByText('要確認'),
+  ).toBeVisible()
+
+  // 利用者が false にしたときだけ解除される
+  await page.goto(`/projects/${projectId}`)
+  await page.getByRole('region', { name: '要確認と再生成' }).getByLabel('要確認').uncheck()
+  const cleared = await request.get(`/api/projects/${projectId}`)
+  expect((await cleared.json()) as { reviewRequired: boolean }).toMatchObject({
+    reviewRequired: false,
+  })
+})
+
+test('does not start a regeneration for a project without a HEAD commit', async ({ page }) => {
+  const db = openDatabase(DB_PATH)
+  let projectId = ''
+  try {
+    projectId = randomUUID()
+    insertProject(db, {
+      id: projectId,
+      name: 'No Head',
+      localPath: `/seed/${projectId}`,
+      repoNodeId: `NODE_${projectId}`,
+      repoOwner: 'seed',
+      repoName: 'demo',
+      repoUrl: 'https://github.com/seed/demo',
+      defaultBranch: 'main',
+      status: 'active',
+    })
+  } finally {
+    db.close()
+  }
+
+  await page.goto(`/projects/${projectId}`)
+  await page.getByRole('button', { name: '進捗を再生成' }).click()
+  await expect(page.getByRole('alert')).toContainText('INVALID_REQUEST')
+
+  // 要確認は HEAD が無くても設定できる
+  await page.getByRole('region', { name: '要確認と再生成' }).getByLabel('要確認').check()
+  await expect(
+    page.getByRole('region', { name: '要確認と再生成' }).getByLabel('要確認'),
+  ).toBeChecked()
+})

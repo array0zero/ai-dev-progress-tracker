@@ -109,3 +109,21 @@ export function declineCandidate(id: string): Promise<void> {
 export function reopenCandidate(id: string): Promise<void> {
   return postCandidate(id, 'reopen', {})
 }
+
+export interface ReviewState {
+  projectId: string
+  reviewRequired: boolean
+  reviewRequiredAt: string | null
+}
+
+export async function setProjectReview(id: string, required: boolean): Promise<ReviewState> {
+  const response = await fetch(`/api/projects/${encodeURIComponent(id)}/review`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ required }),
+  })
+  if (!response.ok) {
+    throw await toApiError(response)
+  }
+  return (await response.json()) as ReviewState
+}

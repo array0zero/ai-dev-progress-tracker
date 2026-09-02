@@ -40,9 +40,10 @@ export function enqueueRecovery(
     return { ok: false, status: 409, code: 'RUN_ALREADY_ACTIVE' }
   }
 
+  // HEAD が無い project では再生成を開始しない (DESIGN: 422 INVALID_REQUEST)。
   const commit = getLatestCommit(db, projectId)
   if (commit === null) {
-    return { ok: false, status: 422, code: 'NO_COMMIT_FOR_RECOVERY' }
+    return { ok: false, status: 422, code: 'INVALID_REQUEST' }
   }
 
   const result: EnqueueGenerationResult = enqueueGeneration(

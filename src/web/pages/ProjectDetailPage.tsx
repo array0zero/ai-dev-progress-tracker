@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { DecisionView, ProjectDetail } from '../../shared/api.js'
-import { ApiError, fetchProject, recoverProject } from '../api/client.js'
+import type { DecisionView, ProjectDetailV2 } from '../../shared/api.js'
+import { ApiError, fetchProject, recoverProject, setProjectReview } from '../api/client.js'
 import { EvidenceList } from '../components/EvidenceList.js'
 import { ProgressSection } from '../components/ProgressSection.js'
+import { ReviewControls } from '../components/ReviewControls.js'
 import { StatusBanner } from '../components/StatusBanner.js'
 
 const FIELD_LABELS: Record<string, string> = {
@@ -22,7 +23,7 @@ export interface ProjectDetailPageProps {
 }
 
 export function ProjectDetailPage({ projectId }: ProjectDetailPageProps) {
-  const [detail, setDetail] = useState<ProjectDetail | null>(null)
+  const [detail, setDetail] = useState<ProjectDetailV2 | null>(null)
   const [banner, setBanner] = useState<BannerState | null>(null)
   const [loading, setLoading] = useState(true)
 
@@ -30,7 +31,7 @@ export function ProjectDetailPage({ projectId }: ProjectDetailPageProps) {
 
   const load = useCallback(async () => {
     try {
-      setDetail(await fetchProject(projectId))
+      setDetail((await fetchProject(projectId)) as ProjectDetailV2)
       setBanner(null)
     } catch (error) {
       setDetail(null)
@@ -47,6 +48,27 @@ export function ProjectDetailPage({ projectId }: ProjectDetailPageProps) {
   useEffect(() => {
     void load()
   }, [load])
+
+  async function handleReview(required: boolean): Promise<void> {
+    // controlled checkbox なので操作を即座に反映し、失敗したら元へ戻す。
+    setDetail((current) => (current === null ? current : { ...current, reviewRequired: required }))
+    try {
+      const state = await setProjectReview(projectId, required)
+      setDetail((current) =>
+        current === null ? current : { ...current, reviewRequired: state.reviewRequired },
+      )
+      setBanner(null)
+    } catch (error) {
+      setDetail((current) =>
+        current === null ? current : { ...current, reviewRequired: !required },
+      )
+      setBanner(
+        error instanceof ApiError
+          ? { code: error.code, message: error.message }
+          : { code: 'INTERNAL_ERROR', message: 'Failed to update the review flag.' },
+      )
+    }
+  }
 
   async function handleRecover(): Promise<void> {
     setRecovering(true)
@@ -79,9 +101,12 @@ export function ProjectDetailPage({ projectId }: ProjectDetailPageProps) {
           <p className="project-detail__repo">{detail.repository}</p>
           <p className="project-detail__sha">{detail.lastCommitSha?.slice(0, 8) ?? '—'}</p>
 
-          <button type="button" onClick={handleRecover} disabled={recovering}>
-            進捗を再生成
-          </button>
+          <ReviewControls
+            reviewRequired={detail.reviewRequired}
+            onToggleReview={handleReview}
+            onRegenerate={handleRecover}
+            busy={recovering}
+          />
 
           {detail.missingFields.length > 0 ? (
             <section className="project-detail__missing" aria-label="不足項目">
