@@ -1,8 +1,14 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { ProjectSummary, SystemStatus } from '../../shared/api.js'
-import { ApiError, fetchProjects } from '../api/client.js'
+import type { RegistrationCandidate } from '../../shared/domain.js'
+import { ApiError, fetchCandidates, fetchProjects, reopenCandidate } from '../api/client.js'
 import { ProjectCard } from '../components/ProjectCard.js'
-import { RegisterProjectForm } from '../components/RegisterProjectForm.js'
+import {
+  RegisterProjectForm,
+  type RegisterProjectPrefill,
+} from '../components/RegisterProjectForm.js'
+import { RegistrationCandidatePanel } from '../components/RegistrationCandidatePanel.js'
+import { RegistrationPrompt } from '../components/RegistrationPrompt.js'
 import { StatusBanner } from '../components/StatusBanner.js'
 
 interface BannerState {
@@ -22,8 +28,15 @@ async function fetchSystemStatus(): Promise<SystemStatus | null> {
   }
 }
 
+function candidateIdFromUrl(): string | null {
+  return new URLSearchParams(window.location.search).get('candidate')
+}
+
 export function DashboardPage() {
   const [projects, setProjects] = useState<ProjectSummary[]>([])
+  const [candidates, setCandidates] = useState<RegistrationCandidate[]>([])
+  const [prefill, setPrefill] = useState<RegisterProjectPrefill | null>(null)
+  const promptCandidateId = candidateIdFromUrl()
   const [banner, setBanner] = useState<BannerState | null>(null)
   const [system, setSystem] = useState<SystemStatus | null>(null)
   const [loading, setLoading] = useState(true)
@@ -40,6 +53,11 @@ export function DashboardPage() {
       }
     } finally {
       setLoading(false)
+    }
+    try {
+      setCandidates(await fetchCandidates())
+    } catch {
+      setCandidates([])
     }
     setSystem(await fetchSystemStatus())
   }, [])
@@ -73,7 +91,22 @@ export function DashboardPage() {
 
       {banner !== null ? <StatusBanner code={banner.code} message={banner.message} /> : null}
 
-      <RegisterProjectForm onRegistered={reload} onError={setBanner} />
+      {promptCandidateId !== null ? (
+        <RegistrationPrompt candidateId={promptCandidateId} onSettled={reload} />
+      ) : null}
+
+      <RegistrationCandidatePanel
+        candidates={candidates}
+        onReopen={async (candidate) => {
+          await reopenCandidate(candidate.id)
+          await reload()
+        }}
+        onManualRegister={(candidate) =>
+          setPrefill({ name: candidate.suggestedName, localPath: candidate.localPath })
+        }
+      />
+
+      <RegisterProjectForm onRegistered={reload} onError={setBanner} prefill={prefill} />
 
       <section className="project-list">
         {loading ? <p>読み込み中…</p> : null}

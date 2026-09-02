@@ -1,16 +1,30 @@
-import { type FormEvent, useState } from 'react'
+import { type FormEvent, useEffect, useState } from 'react'
 import { ApiError, createProject } from '../api/client.js'
+
+export interface RegisterProjectPrefill {
+  name: string
+  localPath: string
+}
 
 export interface RegisterProjectFormProps {
   onRegistered: () => void | Promise<void>
   onError: (error: { code: string; message: string }) => void
+  /** failed candidate からの手動登録導線。値を入れるだけで project は作らない。 */
+  prefill?: RegisterProjectPrefill | null
 }
 
-export function RegisterProjectForm({ onRegistered, onError }: RegisterProjectFormProps) {
+export function RegisterProjectForm({ onRegistered, onError, prefill }: RegisterProjectFormProps) {
   const [name, setName] = useState('')
   const [localPath, setLocalPath] = useState('')
   const [repository, setRepository] = useState('')
   const [submitting, setSubmitting] = useState(false)
+
+  useEffect(() => {
+    if (prefill != null) {
+      setName(prefill.name)
+      setLocalPath(prefill.localPath)
+    }
+  }, [prefill])
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault()

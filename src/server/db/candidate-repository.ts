@@ -114,7 +114,12 @@ export function markPrompted(db: Db, id: string, now: Date = new Date()): boolea
  * 承認 (attempt 1) と自動 retry (attempt 2) の両方の入口。
  * attempt_count は 2 で頭打ちにし、3 回目の attempt を state 側で拒否する。
  */
-export function beginRegistration(db: Db, id: string, now: Date = new Date()): boolean {
+export function beginRegistration(
+  db: Db,
+  id: string,
+  now: Date = new Date(),
+  nameOverride: string | null = null,
+): boolean {
   const ts = now.toISOString()
   return (
     db
@@ -122,6 +127,7 @@ export function beginRegistration(db: Db, id: string, now: Date = new Date()): b
         `UPDATE registration_candidates
          SET status = 'registering',
              decision_at = COALESCE(decision_at, ?),
+             suggested_name = COALESCE(?, suggested_name),
              attempt_count = attempt_count + 1
          WHERE id = ?
            AND (
@@ -129,7 +135,7 @@ export function beginRegistration(db: Db, id: string, now: Date = new Date()): b
              OR (status = 'registering' AND attempt_count = 1)
            )`,
       )
-      .run(ts, id).changes === 1
+      .run(ts, nameOverride === null ? null : nameOverride.slice(0, 120), id).changes === 1
   )
 }
 
