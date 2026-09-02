@@ -1,5 +1,7 @@
 export type DashboardStateFilter = 'has_next_action' | 'needs_review' | 'unreflected'
 
+export type DashboardView = 'dense' | 'compact'
+
 export const STATE_FILTERS: ReadonlyArray<{ id: DashboardStateFilter; label: string }> = [
   { id: 'has_next_action', label: '次の作業あり' },
   { id: 'needs_review', label: '要確認' },
@@ -9,9 +11,10 @@ export const STATE_FILTERS: ReadonlyArray<{ id: DashboardStateFilter; label: str
 export interface DashboardToolbarProps {
   filters: readonly DashboardStateFilter[]
   onToggleFilter: (filter: DashboardStateFilter) => void
+  view: DashboardView
+  onViewChange: (view: DashboardView) => void
   query: string
   onQueryChange: (query: string) => void
-  /** search UI は T020 で有効化する。 */
   searchEnabled?: boolean
   visibleCount: number
   totalCount: number
@@ -20,9 +23,11 @@ export interface DashboardToolbarProps {
 export function DashboardToolbar({
   filters,
   onToggleFilter,
+  view,
+  onViewChange,
   query,
   onQueryChange,
-  searchEnabled = false,
+  searchEnabled = true,
   visibleCount,
   totalCount,
 }: DashboardToolbarProps) {
@@ -50,6 +55,21 @@ export function DashboardToolbar({
           placeholder="プロジェクト名・キーワード"
         />
       </label>
+      <fieldset className="toolbar__view">
+        <legend className="toolbar__legend">表示</legend>
+        {(['dense', 'compact'] as const).map((value) => (
+          <label key={value} className="toolbar__filter">
+            <input
+              type="radio"
+              name="dashboard-view"
+              value={value}
+              checked={view === value}
+              onChange={() => onViewChange(value)}
+            />
+            {value === 'dense' ? '高密度' : 'カード'}
+          </label>
+        ))}
+      </fieldset>
       <span className="toolbar__count">
         {visibleCount} / {totalCount}
       </span>

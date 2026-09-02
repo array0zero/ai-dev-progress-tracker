@@ -2,7 +2,12 @@ import { useCallback, useEffect, useState } from 'react'
 import type { ProjectSummaryV2, SystemStatus } from '../../shared/api.js'
 import type { RegistrationCandidate } from '../../shared/domain.js'
 import { ApiError, fetchCandidates, fetchProjects, reopenCandidate } from '../api/client.js'
-import { type DashboardStateFilter, DashboardToolbar } from '../components/DashboardToolbar.js'
+import { CompactProjectCard } from '../components/CompactProjectCard.js'
+import {
+  type DashboardStateFilter,
+  DashboardToolbar,
+  type DashboardView,
+} from '../components/DashboardToolbar.js'
 import { DenseProjectRow } from '../components/DenseProjectRow.js'
 import {
   RegisterProjectForm,
@@ -50,6 +55,56 @@ function matchesFilters(
   )
 }
 
+export const VIEW_STORAGE_KEY = 'tracker.dashboard.view.v2'
+
+function readStoredView(): DashboardView {
+  try {
+    const stored = window.localStorage.getItem(VIEW_STORAGE_KEY)
+    return stored === 'compact' || stored === 'dense' ? stored : 'dense'
+  } catch {
+    // localStorage が使えない環境では既定の dense
+    return 'dense'
+  }
+}
+
+function storeView(view: DashboardView): void {
+  try {
+    window.localStorage.setItem(VIEW_STORAGE_KEY, view)
+  } catch {
+    // 表示設定は保存できなくても機能に影響しない
+  }
+}
+
+/** DESIGN「検索・絞り込み契約」: NFKC → lowercase → trim → whitespace split。 */
+export function searchTokens(query: string): string[] {
+  return query
+    .normalize('NFKC')
+    .toLowerCase()
+    .trim()
+    .split(/\s+/)
+    .filter((token) => token !== '')
+}
+
+function normalizeHaystack(value: string): string {
+  return value.normalize('NFKC').toLowerCase()
+}
+
+/** token 間は AND、各 token は対象 field のいずれかへ substring 一致。 */
+export function matchesQuery(project: ProjectSummaryV2, tokens: readonly string[]): boolean {
+  if (tokens.length === 0) {
+    return true
+  }
+  const haystacks = [
+    project.name,
+    project.summary,
+    project.repository,
+    project.currentPosition ?? '',
+    ...project.completedItems,
+    ...project.nextActions,
+  ].map(normalizeHaystack)
+  return tokens.every((token) => haystacks.some((value) => value.includes(token)))
+}
+
 /** DESIGN: default sort は lastUpdatedAt DESC、同値は name ASC。 */
 function sortProjects(projects: readonly ProjectSummaryV2[]): ProjectSummaryV2[] {
   return [...projects].sort((a, b) => {
@@ -66,6 +121,7 @@ export function DashboardPage() {
   const [prefill, setPrefill] = useState<RegisterProjectPrefill | null>(null)
   const [filters, setFilters] = useState<DashboardStateFilter[]>([])
   const [query, setQuery] = useState('')
+  const [view, setView] = useState<DashboardView>(() => readStoredView())
   const promptCandidateId = candidateIdFromUrl()
   const [banner, setBanner] = useState<BannerState | null>(null)
   const [system, setSystem] = useState<SystemStatus | null>(null)
@@ -96,7 +152,11 @@ export function DashboardPage() {
     void reload()
   }, [reload])
 
-  const visible = sortProjects(projects.filter((project) => matchesFilters(project, filters)))
+  const tokens = searchTokens(query)
+  // search と state filter は AND (DESIGN D015/D016)。
+  const visible = sortProjects(
+    projects.filter((project) => matchesFilters(project, filters) && matchesQuery(project, tokens)),
+  )
 
   return (
     <main className="app">
@@ -149,21 +209,35 @@ export function DashboardPage() {
         }
         query={query}
         onQueryChange={setQuery}
+        view={view}
+        onViewChange={(next) => {
+          // 表示切替は localStorage だけ。API mutation は呼ばない (D017)。
+          setView(next)
+          storeView(next)
+        }}
         visibleCount={visible.length}
         totalCount={projects.length}
       />
 
-      <section className="project-list project-list--dense">
+      <section className={`project-list project-list--${view}`}>
         {loading ? <p>読み込み中…</p> : null}
         {!loading && projects.length === 0 ? (
           <p className="project-list__empty">登録済みプロジェクトはありません。</p>
         ) : null}
         {!loading && projects.length > 0 && visible.length === 0 ? (
-          <p className="project-list__empty">条件に一致するプロジェクトはありません。</p>
+          <p className="project-list__empty">
+            {tokens.length > 0
+              ? '検索に一致するプロジェクトはありません。'
+              : '条件に一致するプロジェクトはありません。'}
+          </p>
         ) : null}
-        {visible.map((project) => (
-          <DenseProjectRow key={project.id} project={project} />
-        ))}
+        {visible.map((project) =>
+          view === 'compact' ? (
+            <CompactProjectCard key={project.id} project={project} />
+          ) : (
+            <DenseProjectRow key={project.id} project={project} />
+          ),
+        )}
       </section>
 
       <details className="manual-register">

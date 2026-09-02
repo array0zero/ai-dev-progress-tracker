@@ -483,3 +483,123 @@ test('shows the unreflected badge that matches the real Git HEAD from the API', 
     repo.cleanup()
   }
 })
+
+test('defaults to dense, restores a stored view and falls back for an invalid one', async ({
+  page,
+}) => {
+  clearProjects()
+  seedDenseProjects([
+    { name: 'View One', lastUpdatedAt: '2026-09-01T00:00:00.000Z', nextActions: ['続き'] },
+  ])
+
+  await page.goto('/')
+  // localStorage key なしで dense
+  await expect(page.locator('.dense-row')).toHaveCount(1)
+  await expect(page.locator('.compact-card')).toHaveCount(0)
+
+  const before = await page.request.get('/api/projects')
+  const beforeBody = await before.text()
+
+  await page.getByLabel('カード').check()
+  await expect(page.locator('.compact-card')).toHaveCount(1)
+  await expect(page.locator('.dense-row')).toHaveCount(0)
+  expect(await page.evaluate(() => window.localStorage.getItem('tracker.dashboard.view.v2'))).toBe(
+    'compact',
+  )
+
+  // 表示切替で管理 data は変わらない
+  const after = await page.request.get('/api/projects')
+  expect(await after.text()).toBe(beforeBody)
+
+  // reload で復元
+  await page.reload()
+  await expect(page.locator('.compact-card')).toHaveCount(1)
+
+  // invalid 値は dense へ fallback
+  await page.evaluate(() => window.localStorage.setItem('tracker.dashboard.view.v2', 'nope'))
+  await page.reload()
+  await expect(page.locator('.dense-row')).toHaveCount(1)
+  await expect(page.locator('.compact-card')).toHaveCount(0)
+})
+
+test('shows an empty state in both views when there are no projects', async ({ page }) => {
+  clearProjects()
+  await page.goto('/')
+  await expect(page.getByText('登録済みプロジェクトはありません。')).toBeVisible()
+  await page.getByLabel('カード').check()
+  await expect(page.getByText('登録済みプロジェクトはありません。')).toBeVisible()
+  await expect(page.locator('.compact-card')).toHaveCount(0)
+})
+
+test('searches by name and keyword with AND tokens and NFKC normalization', async ({
+  page,
+  request,
+}) => {
+  clearProjects()
+  seedDenseProjects([
+    {
+      name: 'Alpha Tracker',
+      lastUpdatedAt: '2026-09-01T00:00:00.000Z',
+      nextActions: ['ダッシュボードを実装する'],
+    },
+    {
+      name: 'Beta Service',
+      lastUpdatedAt: '2026-09-02T00:00:00.000Z',
+      nextActions: ['バックアップを検証する'],
+    },
+    { name: 'Gamma Tool', lastUpdatedAt: '2026-09-03T00:00:00.000Z' },
+  ])
+
+  await page.goto('/')
+  const search = page.getByLabel('検索')
+  await expect(search).toBeVisible()
+
+  await search.fill('alpha')
+  await expect(page.locator('.dense-row__name')).toHaveText(['Alpha Tracker'])
+
+  // 全角 ASCII も NFKC 正規化で同じ結果になる
+  await search.fill('ＡＬＰＨＡ')
+  await expect(page.locator('.dense-row__name')).toHaveText(['Alpha Tracker'])
+
+  // 日本語 keyword は現在地・次の作業本文にも当たる
+  await search.fill('バックアップ')
+  await expect(page.locator('.dense-row__name')).toHaveText(['Beta Service'])
+
+  // 2 token は両方を含む project だけ
+  await search.fill('beta バックアップ')
+  await expect(page.locator('.dense-row__name')).toHaveText(['Beta Service'])
+  await search.fill('beta ダッシュボード')
+  await expect(page.getByText('検索に一致するプロジェクトはありません。')).toBeVisible()
+
+  // 空 / 空白のみは全件
+  await search.fill('   ')
+  await expect(page.locator('.dense-row')).toHaveCount(3)
+
+  // API から取り直した現在地本文で検索しても表示と一致する
+  const projects = (await (await request.get('/api/projects')).json()) as Array<{
+    id: string
+    name: string
+    currentPosition: string | null
+  }>
+  const target = projects.find((project) => project.name === 'Gamma Tool')
+  await search.fill(target?.currentPosition ?? '')
+  await expect(page.locator('.dense-row__name')).toHaveText(['Gamma Tool'])
+})
+
+test('combines search with a state filter using AND', async ({ page }) => {
+  clearProjects()
+  seedDenseProjects([
+    { name: 'Filter Next', lastUpdatedAt: '2026-09-01T00:00:00.000Z', nextActions: ['作業あり'] },
+    { name: 'Filter Plain', lastUpdatedAt: '2026-09-02T00:00:00.000Z' },
+  ])
+
+  await page.goto('/')
+  await page.getByLabel('検索').fill('filter')
+  await expect(page.locator('.dense-row')).toHaveCount(2)
+
+  await page.getByLabel('次の作業あり').check()
+  await expect(page.locator('.dense-row__name')).toHaveText(['Filter Next'])
+
+  await page.getByLabel('検索').fill('plain')
+  await expect(page.getByText('検索に一致するプロジェクトはありません。')).toBeVisible()
+})

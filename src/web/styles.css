@@ -378,3 +378,69 @@ body {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   color: #6b7280;
 }
+
+.toolbar__view {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+
+/* compact view: 1600px 以上で 3 columns (DESIGN)。 */
+.project-list--compact {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 1fr;
+}
+
+@media (min-width: 1600px) {
+  .project-list--compact {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+.compact-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 168px;
+  padding: 16px;
+  border: 1px solid #d7dae0;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.compact-card__name {
+  font-size: 16px;
+  font-weight: 600;
+  color: #1b1f24;
+  text-decoration: none;
+}
+
+.compact-card__summary {
+  margin: 0;
+  font-size: 0.8rem;
+  color: #6b7280;
+}
+
+.compact-card__current {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.compact-card__next,
+.compact-card__updated {
+  margin: 0;
+  font-size: 0.8rem;
+  color: #4a5058;
+}
+
+.compact-card__badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: auto;
+}
