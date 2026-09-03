@@ -1,13 +1,14 @@
 # DESIGN.md — 設計書
 
 project_id: ai-dev-progress-tracker  
-version: 2.5  
+version: 2.6  
 date: 2026-09-03  
 source: PLAN.md v1.1 + 公開 `ai-dev-progress-tracker` commit `c281f91` / DESIGN.md v1.7 + 2026-09-02実測環境  
 revision 2.2: D006 (Codex notify) を「競合エラー」から「既存notifyを退避してchain」へ変更  
 revision 2.3: D027 追加。chain の退避データ検証・TOML認識の範囲検出・atomic write・byte一致復元を固定  
 revision 2.4: D028 追加。managed block の構造検証・行頭挿入での往復・`--chain`不正の区別・親終了watchdogを固定  
-revision 2.5: D029 追加。block 内 notify の所有権検証・BOM の parse 前除去・watchdog 経路の直接検証を固定
+revision 2.5: D029 追加。block 内 notify の所有権検証・BOM の parse 前除去・watchdog 経路の直接検証を固定  
+revision 2.6: D030 追加。managed block の識別・所有権判定を単一関数の 4 条件へ再設計 (4-2 系を置き換え)
 
 ## 0. 受入検査・実測環境・v1.3〜v1.7互換インベントリ
 
@@ -188,27 +189,35 @@ v2追加:
 4-1. 範囲検出は文字列 (basic / literal / multi-line) と comment を認識して行う。
    `[` `]` `#` を含む値でも誤検出しない。求めた範囲を単独で再parseし、値が元と一致しない場合は
    **範囲不明として無変更で停止**する。
-4-2. `# previous-notify:` は使用前に必ず検証する。base64の往復一致、TOMLとしてのparse、
+4-2. **managed block の識別と所有権は 1 か所 (`readManagedBlock`) で決める。**
+   判定材料は block 自身だけで、file 全体の parse 結果 (top-level `notify` の値) を
+   所有権の根拠にしない。次の 4 条件をすべて満たすときだけ「tracker が書いた block」とする。
+   1つでも欠ければ `corrupt` とし、install / repair / uninstall のいずれも**書き込みを行わない**。
+   doctor も `ready` にしない。
+   1. 開始 / 終了 marker が **行全体** として 1 組だけ存在する (marker 行の前後の空白のみ許可、
+      marker の後ろに文字列が付く行は marker と認めない)。marker 文字列が block の外にも
+      現れる config も対象外。
+   2. block の中身が「任意の `# previous-notify:` 1 行」+「TOML として `notify` **だけ**を
+      定義する本文」であること。中身は block だけを単独 parse して確認する。
+   3. その `notify` argv が tracker の handler 形であること:
+      argv[0] の basename が `node` / `node.exe`、argv[1] が絶対 path の `.../cli/index.js`、
+      続く 5 要素が `agent-event --agent codex --input argv`、末尾は無しか
+      `--chain <string配列のJSON>` のみ。setup 時点の絶対 path とは比較しないので、
+      repository 移動後の `--repair` も所有と認める。
+   4. file の top-level `notify` assignment が **この block の範囲内**にあり、値が block の
+      `notify` と一致すること (block が table の中にある / 別の場所に top-level notify がある
+      構成を弾く)。
+4-3. `# previous-notify:` は使用前に必ず検証する。base64の往復一致、TOMLとしてのparse、
    `notify`がstring配列であること、`--chain`のargvと一致することをすべて満たさない場合は
-   `INVALID_AGENT_CONFIG`とし、install / repair / uninstall のいずれも**書き込みを行わない**。
-   doctorもこの状態を`ready`にしない。
-4-2-1. `--chain`は「無い」と「壊れている」を区別する。値が無い / JSONとして不正 /
-   string配列でない場合はcorruptとして全modeで無変更。「`--chain`が無く退避も無い」だけが
-   正常なchainなし状態。
-4-2-2. managed blockはmarker文字列の存在だけで認定しない。開始・終了markerの対応に加え、
-   中身が「任意の`# previous-notify:` 1行 + `notify = [...]` 1行」だけであることを検証する。
-   markerが片方だけ、blockの外にも出現、block内に他の行がある場合はcorruptとし、
-   利用者データを消さないため全modeで無変更にする。
-4-2-3. 構造が合っていても**所有権**を別に検証する。block内の`notify` argvが
-   `[<node>, <...>/cli/index.js, "agent-event", "--agent", "codex", "--input", "argv"]`
-   (末尾は無しか`--chain <json>`のみ) の形でなければ利用者の設定とみなし、corruptとして
-   全modeで無変更にする。判定は内容だけで行い、setup時点の絶対pathに依存させない
-   (repository移動後の`--repair`も所有と認める)。
+   corrupt。`--chain` は「無い」と「壊れている」を区別し、後者も corrupt。
+   「`--chain` も退避も無い」だけが正常な chain なし状態。
+4-3-1. `config.toml`への書き込みは temp file への完全書込み → 読み直し検証 → atomic rename で行う。
+   途中で失敗しても元 file と退避データを同時に失わない。temp file は必ず後始末する。
+4-3-2. 既存 notify を chain するときの置換範囲は **行境界まで広げる**。行末コメントや
+   末尾空白も退避に含めるため、marker 行に他の文字が残らず、uninstall が byte 一致で戻せる。
 4-4. UTF-8 BOM付きconfigは、**parse前にBOMを本文から切り離す**。以降のoffsetはBOMを除いた
    本文基準で扱い、書き戻すときにBOMを先頭へ復元する。BOMのみ / BOM+top-level値 / BOM+table /
    BOM+既存notify のいずれもinstall・uninstallがbyte一致で往復する。
-4-3. `config.toml`への書き込みは temp file への完全書込み → 読み直し検証 → atomic rename で行う。
-   途中で失敗しても元 file と退避データを同時に失わない。temp file は必ず後始末する。
 5. managed blockにはsetup時点の `process.execPath` と `<repo>/dist/cli/index.js` の**絶対パス**を入れる。
 6. repository移動後は`doctor`が`AGENT_HOOK_PATH_STALE`を返し、`setup-agents --repair`でtracker managed blockだけ再生成する。退避済み `# previous-notify:` は再生成後も保持する。
 7. notifyのJSONは末尾argvとして受け、`type=agent-turn-complete`以外は無視する。
@@ -1040,7 +1049,8 @@ npm run eval:ui:record
 - この watchdog 経路は `tests/integration/server-shutdown.test.ts` が直接検証する。
   親を `SIGKILL` で消し (server へは signal を送らない)、server の終了・port解放・
   DB close (再open と data dir 削除が成功すること) を確認する。
-  `TRACKER_PARENT_PID` 未指定では終了しないことも同時に固定する。
+  検証は **src (tsx) と build 済み `dist/server/index.js` の両方**で行う (実運用と E2E は dist を
+  起動するため)。`TRACKER_PARENT_PID` 未指定では終了しないことも同時に固定する。
 
 ### CI
 
@@ -1135,6 +1145,7 @@ agent-eventがserver未起動なら同じbuildの`dist/server/index.js`をdetach
 | D023 | UI performance | harnessとactual記録を別task | 想定expected禁止 | 事前fixture: 却下 |
 | D024 | real external tests | temp local + dedicated Private fixture repo | fake完結防止とuser data保護 | production repo試験: 却下 |
 | D025 | exact OS/browser未計測 | implementationをblockせずT025で識別情報だけ記録 | viewportは取得済み、追加質問不要 | 推測記載: 却下 |
+| D030 | managed block 識別の再設計 | marker 検出・構造検証・所有権判定・top-level 一致確認を `readManagedBlock` 1 関数の 4 条件へ統合し、file 全体の parse 結果を所有権の根拠から外す。marker は行全体一致、argv は node 実行体 + 絶対 `.../cli/index.js` + 固定 subcommand + 末尾 `--chain` のみ、chain 置換は行境界まで広げる | 同一領域で 4 回連続して破壊経路が見つかったため、個別の穴埋めをやめ「どこを見て所有と判断するか」を 1 か所へ集約した。所有権の材料が複数箇所に散っていたことが、top-level notify の取り違え・marker 行末の見落とし・argv 先頭の未検証を同時に生んでいた | 個別条件の追加を続ける: 却下。block へ独自 metadata (checksum 等) を持たせる: 追加状態を増やすため却下 (2026-09-03 revision 2.6) |
 | D029 | block内notifyの所有権とBOM | (1) 構造検証に加え、block内notify argvの形 (cli/index.js + agent-event + --agent codex + --input argv、末尾は `--chain <json>` のみ) で所有権を判定し、tracker以外ならcorruptとして全mode無変更。判定は内容のみでpath非依存。(2) BOMはparse前に切り離し、書き戻し時に復元する。(3) watchdog経路は親をSIGKILLする専用testで直接検証する | 再々レビューで「正しいmarker対の中に利用者のnotifyがあるconfigをstaleと誤認し、uninstallでそのnotifyが消える」「BOM付きconfigがparse前段で INVALID_AGENT_CONFIG になりBOM対応経路へ到達しない」を実再現。marker構造だけでは所有権を保証できないため、tracker自身のhandlerであることまで確認する方針にした | marker構造だけで所有と見なす: 却下。BOMをそのままparserへ渡す: 却下 (2026-09-03 revision 2.5) |
 | D028 | managed block の同定と挿入位置 | (1) blockはmarker対 + 中身の形 (`# previous-notify:` 1行 + `notify` 1行のみ) まで検証し、一致しなければcorruptとして全modeで無変更。(2) notify不在時の挿入はfile先頭固定にして `block + 改行1つ` の往復で byte 一致。(3) `--chain`の「無い」と「不正」を型で区別。(4) E2E serverは signal に加え `TRACKER_PARENT_PID` watchdog で親終了時に自ら終わる | 再レビューで「末尾改行なしconfigへ install すると block が直前行へ連結し復元不能」「利用者コメントがmarkerと一致するとその間の行を削除し重複notifyへ破壊」「不正 `--chain` が corrupt にならず config を書き換える」「sandboxでsignalが届かずE2Eが終了しない」を実再現したため | marker文字列だけで判定: 却下。table header直前へ挿入: 末尾改行なしで往復不能のため却下。signalのみに依存: 環境依存のため却下 (2026-09-03 revision 2.4) |
 | D027 | Codex config 書換えの安全性 | (1) 退避base64は往復一致・TOML parse・`--chain`一致まで検証し、不一致なら破壊的操作を行わず`INVALID_AGENT_CONFIG`。(2) notify範囲検出は文字列/commentを認識し、求めた範囲の再parseで自己検証。(3) 書込みは temp file → 検証 → atomic rename。(4) 復元は全体byte一致でテストする | レビューで「破損base64をdoctorがready判定し、uninstallが既存notifyを消す」「argv内の`[`で範囲がずれ`[tui]`以下が消える」「非atomic書込みで元configと退避を同時に失う」「byte-for-byteテストが実際は部分一致だった」を再現。いずれもuser configの破壊につながるため、検出できない限り書かない方針へ統一した | 行分割ベースの範囲検出を維持: 却下。base64を無検証で使う: 却下 (2026-09-03 revision 2.3) |

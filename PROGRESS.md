@@ -134,3 +134,47 @@ watchdog・SIGTERM・未指定時の 3 経路。
 `npm run real:codex-detection` PASS (実 config の copy に対する install→doctor→repair→uninstall が
 byte 一致復元、実 file は未変更)。DESIGN.md は revision 2.5 (D029 追加、directory tree へ
 `server-shutdown.test.ts` を追記) へ更新。
+
+## Codex 第4回レビュー指摘への対応 (2026-09-03) — 識別・所有権判定の再設計
+
+同じ領域で 4 回連続して破壊経路が出たため、個別の穴埋めをやめて設計を作り直した。
+原因は「所有と判断する材料が複数箇所に散っていたこと」で、file 全体の parse 結果 (top-level
+notify)・marker 正規表現・block 本文の行検査がそれぞれ独立に判断していた。
+
+**再設計**: managed block の識別と所有権判定を `readManagedBlock` 1 関数へ統合し、
+判定材料を block 自身に限定したうえで、次の 4 条件を**すべて**満たすときだけ「tracker の block」
+とする。1 つでも欠ければ `corrupt` で全 mode 無変更 (doctor も ready にしない)。
+
+1. 開始 / 終了 marker が**行全体**として 1 組だけ存在する (前後の空白のみ許可。marker の後ろに
+   文字列が付く行は marker と認めない。marker 文字列が block 外にも現れる config も対象外)
+2. block の中身が「任意の `# previous-notify:` 1 行」+「TOML として `notify` **だけ**を定義する
+   本文」であること。**block だけを単独 parse** して確認する
+3. その `notify` argv が tracker の handler 形であること (argv[0] の basename が `node`/`node.exe`、
+   argv[1] が絶対 path の `.../cli/index.js`、続く 5 要素が `agent-event --agent codex --input argv`、
+   末尾は無しか `--chain <string配列JSON>` のみ)
+4. file の top-level `notify` assignment が**この block の範囲内**にあり、値が block の `notify` と
+   一致すること
+
+| # | 判定 | 対応 |
+|---:|---|---|
+| 1 | **妥当・修正** | 所有権検証が block 内の notify ではなく file 全体の `parsed.notify` を見ていた。上記の再設計で、判定材料を block 本文の単独 parse に限定し、条件 4 で「top-level notify がこの block の中にあること」を要求した。top-level に tracker argv、`[tui]` 内の marker 対に利用者 notify がある fixture は `corrupt` になり、3 mode すべてで無変更・`[tui].notify` が残ることをテストで固定。 |
+| 2 | **妥当・修正** | `isTrackerNotifyArgv` が argv[0] を検証せず、任意の `/cli/index.js` を通していた。argv[0] の basename が `node` / `node.exe` であること、argv[1] が**絶対 path** の `.../cli/index.js` であることを追加。`["", "Z:/foreign/cli/index.js", ...]` は所有と認めず全 mode 無変更。setup 時点の path とは比較しないので移動後の `--repair` は従来どおり動く。 |
+| 3 | **妥当・修正** | marker 正規表現が行末固定でなく、marker の後ろに文字列があっても block と認めていた。行全体一致 (`^[ \\t]*marker[ \\t]*$`) に変更。あわせて chain 時の置換範囲を**行境界まで広げ**、行末コメント・末尾空白も退避に含めるようにした (marker 行に他の文字が残らず、uninstall が byte 一致で戻る)。 |
+| 4 | **妥当・追加** | watchdog の直接テストが tsx 経由の src だけを対象にしていた。`node dist/server/index.js` を対象にした同じ検証を追加 (dist が無ければ `npm run build:server` を実行してから)。watchdog 経路・SIGTERM 経路とも src / dist の両方で server 終了・port 解放・DB close を確認。実測: dist の watchdog 終了は約 1.4 秒。 |
+
+副次修正: CRLF の config で block 範囲が末尾 CR を含んでいたため、置換後に改行が LF へ変わって
+いた。`lineRangeToOffsets` で CR を終端側として扱い、byte 一致復元を回復した。
+
+追加回帰テスト (unit +8 件 / integration +2 件、合計 343 件):
+table 内 block の拒否 (利用者 notify 保持を確認) / block 外に tracker 風 notify がある構成の拒否 /
+所有判定が block 本文由来であることの確認 / 偽装 argv 8 種 (空実行体・非 node・相対 path・
+index.js でない・別 subcommand・claude agent・余分引数・不正 chain) の拒否 /
+Windows・POSIX 双方の path 形式を所有と認める / marker 行末に文字列がある 3 種の拒否 /
+marker 行の前後空白のみは許可 / 通常 config の chain→repair→uninstall byte 一致 /
+dist entry の watchdog・SIGTERM。
+
+検証: `npm run test:all` exit 0 (lint / typecheck / unit+integration 343 件 / build / e2e 33 件、
+48 秒、node プロセス数 7→7)、`npm run verify:secrets` hit 0 件、
+`npm run real:codex-detection` PASS (実 config copy の install→doctor→repair→uninstall が
+byte 一致復元、実 file は未変更)。DESIGN.md は revision 2.6 (D030 追加、4-2 系を再設計後の
+4 条件へ置き換え) へ更新。

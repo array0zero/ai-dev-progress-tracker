@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parse as parseToml } from 'smol-toml'
 
@@ -266,12 +266,12 @@ export interface TextRange {
 }
 
 /**
- * top-level `notify = ...` の raw 範囲 (改行を含まない) を返す。
- * table header 以降 / managed block 内は対象にしない。
+ * top-level `notify = ...` の raw 範囲 (改行を含まない) を返す。table header 以降は対象にしない。
+ * managed block 内かどうかは問わない (所有権判定は readManagedBlock が行い、そこで
+ * 「top-level notify が block の中にあること」を確認する)。
  * 求めた範囲を単独で parse し直し、値が一致しない場合は null を返す (誤検出を残さない)。
  */
 export function findTopLevelNotifyRange(text: string, expectedValue: unknown): TextRange | null {
-  const managed = findManagedBlock(text)?.range ?? null
   let i = 0
   let topLevel = true
 
@@ -307,8 +307,7 @@ export function findTopLevelNotifyRange(text: string, expectedValue: unknown): T
     }
     const key = text.slice(keyStart, cursor).trim()
     const valueEnd = scanValueEnd(text, cursor + 1)
-    const insideManaged = managed !== null && keyStart >= managed.start && keyStart < managed.end
-    if (topLevel && key === 'notify' && !insideManaged) {
+    if (topLevel && key === 'notify') {
       const slice = text.slice(keyStart, valueEnd)
       try {
         const reparsed = parseToml(slice) as Record<string, unknown>
@@ -331,7 +330,7 @@ function escapeRegExp(value: string): string {
 
 export type ChainRead = { kind: 'none' } | { kind: 'ok'; argv: string[] } | { kind: 'invalid' }
 
-/** managed argv の `--chain <json>`。「無い」と「壊れている」を区別する (review 指摘3)。 */
+/** managed argv の `--chain <json>`。「無い」と「壊れている」を区別する。 */
 function readChainArgv(argv: readonly string[]): ChainRead {
   const index = argv.indexOf('--chain')
   if (index === -1) {
@@ -352,17 +351,26 @@ function readChainArgv(argv: readonly string[]): ChainRead {
 }
 
 /**
- * argv が tracker の notify handler かどうかを内容で判定する (re-review 指摘1)。
- * setup 時点の絶対 path に依存させない (repository 移動後の repair も所有と見なす)。
+ * argv が tracker 自身の notify handler かを内容で判定する。
+ * setup 時点の絶対 path とは比較しない (repository 移動後の `--repair` も所有と認める) が、
+ * 実行体が Node であること・CLI が絶対 path の `.../cli/index.js` であることまでは要求する。
  */
 export function isTrackerNotifyArgv(argv: readonly string[] | null): boolean {
   if (argv === null || argv.length < 7) {
     return false
   }
-  const [, cliPath, command, agentFlag, agent, inputFlag, input, ...rest] = argv
+  const [nodePath, cliPath, command, agentFlag, agent, inputFlag, input, ...rest] = argv
+  if (nodePath === undefined || cliPath === undefined) {
+    return false
+  }
+  const nodeName = basename(nodePath).toLowerCase()
+  if (nodeName !== 'node' && nodeName !== 'node.exe') {
+    return false
+  }
+  if (!isAbsolute(cliPath) || !/[\\/]cli[\\/]index\.js$/.test(cliPath)) {
+    return false
+  }
   if (
-    cliPath === undefined ||
-    !/[\\/]cli[\\/]index\.js$/.test(cliPath) ||
     command !== 'agent-event' ||
     agentFlag !== '--agent' ||
     agent !== 'codex' ||
@@ -372,80 +380,200 @@ export function isTrackerNotifyArgv(argv: readonly string[] | null): boolean {
     return false
   }
   // 末尾は「無い」か `--chain <json>` だけ。
-  return rest.length === 0 || (rest.length === 2 && rest[0] === '--chain')
-}
-
-export interface ManagedBlock {
-  range: TextRange
-  /** marker 対で囲まれた中身が tracker block の形をしているか (review 指摘2)。 */
-  valid: boolean
-  previousEncoded: string | null
-  notifyLine: string | null
-}
-
-/**
- * marker 対で囲まれた範囲を返す。marker 文字列の存在だけでは managed と認めず、
- * 中身が「任意の `# previous-notify:` 1 行 + `notify = [...]` 1 行」だけであることまで見る。
- */
-export function findManagedBlock(text: string): ManagedBlock | null {
-  const pattern = new RegExp(
-    `^[ \\t]*${escapeRegExp(CODEX_BLOCK_START)}[\\s\\S]*?^[ \\t]*${escapeRegExp(CODEX_BLOCK_END)}`,
-    'm',
-  )
-  const match = pattern.exec(text)
-  if (match === null) {
-    return null
-  }
-  const range = { start: match.index, end: match.index + match[0].length }
-  const lines = match[0].split('\n').map((line) => line.replace(/\r$/, ''))
-  const body = lines.slice(1, -1)
-
-  let previousEncoded: string | null = null
-  let notifyLine: string | null = null
-  let valid = true
-  for (const line of body) {
-    if (line.trim() === '') {
-      continue
-    }
-    if (line.startsWith(PREVIOUS_NOTIFY_PREFIX)) {
-      if (previousEncoded !== null) {
-        valid = false
-        break
-      }
-      previousEncoded = line.slice(PREVIOUS_NOTIFY_PREFIX.length).trim()
-      continue
-    }
-    if (/^notify\s*=\s*\[/.test(line)) {
-      if (notifyLine !== null) {
-        valid = false
-        break
-      }
-      notifyLine = line
-      continue
-    }
-    // tracker が書いた覚えのない行がある = 利用者のデータ。触らない。
-    valid = false
-    break
-  }
-  if (notifyLine === null) {
-    valid = false
-  }
-  return { range, valid, previousEncoded, notifyLine }
-}
-
-/** marker が片方だけ / 壊れた形で存在するか。存在するなら書き込みを止める。 */
-function hasStrayMarker(text: string, block: ManagedBlock | null): boolean {
-  const hasStart = text.includes(CODEX_BLOCK_START)
-  const hasEnd = text.includes(CODEX_BLOCK_END)
-  if (!hasStart && !hasEnd) {
-    return false
-  }
-  if (block === null || !block.valid) {
+  if (rest.length === 0) {
     return true
   }
-  // marker が block の外にもある場合 (利用者のコメント等) は判別できない。
-  const outside = text.slice(0, block.range.start) + text.slice(block.range.end)
-  return outside.includes(CODEX_BLOCK_START) || outside.includes(CODEX_BLOCK_END)
+  return rest.length === 2 && rest[0] === '--chain' && readChainArgv(argv).kind === 'ok'
+}
+
+// --- managed block の識別と所有権判定 ---------------------------------------
+//
+// 「tracker が書いた block か」を 1 か所で決める。判定材料は block 自身だけで、
+// file 全体の parse 結果 (top-level notify) は所有権判定に使わない。
+// 満たすべき条件:
+//   1. 開始/終了 marker が **行全体** として 1 組だけ存在する (marker 行に他の文字を許さない)
+//   2. block の中身が「任意の `# previous-notify:` 1 行」+「TOML として `notify` だけを
+//      定義する本文」であること
+//   3. その `notify` が tracker 自身の argv 形であること
+//   4. file の top-level `notify` assignment が、この block の範囲内にあること
+//      (block が table の中にある / 別の場所に top-level notify がある構成を弾く)
+
+/**
+ * 範囲を行境界まで広げる。marker 行に他の文字 (行末コメント等) が残らないよう、
+ * 置換対象は必ず行単位にする。退避もこの範囲の raw bytes で行う。
+ */
+export function expandToLineBounds(text: string, range: TextRange): TextRange {
+  const LF = '\n'
+  const CR = '\r'
+  let start = range.start
+  while (start > 0 && text[start - 1] !== LF) {
+    start -= 1
+  }
+  let end = range.end
+  while (end < text.length && text[end] !== LF) {
+    end += 1
+  }
+  // CRLF の CR は行の内容ではなく終端として扱う。
+  if (end > start && text[end - 1] === CR) {
+    end -= 1
+  }
+  return { start, end }
+}
+
+export interface ManagedBlockView {
+  range: TextRange
+  notifyArgv: string[]
+  notifyRange: TextRange
+  previousRaw: string | null
+  chainArgv: string[] | null
+}
+
+export type ManagedBlockResult =
+  | { kind: 'none' }
+  | { kind: 'invalid'; reason: string }
+  | { kind: 'owned'; view: ManagedBlockView }
+
+function markerLineRegExp(marker: string): RegExp {
+  // marker は行全体。前後の空白だけ許し、後ろに文字列が付くものは認めない。
+  return new RegExp(`^[ \\t]*${escapeRegExp(marker)}[ \\t]*$`)
+}
+
+/** file 全体を走査し、line-exact な marker 行の位置を集める。 */
+function findMarkerLines(text: string): { starts: number[]; ends: number[]; lines: string[] } {
+  const lines = text.split('\n')
+  const startRe = markerLineRegExp(CODEX_BLOCK_START)
+  const endRe = markerLineRegExp(CODEX_BLOCK_END)
+  const starts: number[] = []
+  const ends: number[] = []
+  lines.forEach((line, index) => {
+    const value = line.replace(/\r$/, '')
+    if (startRe.test(value)) {
+      starts.push(index)
+    }
+    if (endRe.test(value)) {
+      ends.push(index)
+    }
+  })
+  return { starts, ends, lines }
+}
+
+function lineRangeToOffsets(lines: readonly string[], from: number, to: number): TextRange {
+  let start = 0
+  for (let index = 0; index < from; index += 1) {
+    start += (lines[index]?.length ?? 0) + 1
+  }
+  let end = start
+  for (let index = from; index <= to; index += 1) {
+    end += (lines[index]?.length ?? 0) + 1
+  }
+  // 末尾 marker 行の改行は範囲へ含めない。CRLF の CR も終端側として扱う
+  // (block を置換しても元の改行がそのまま残るようにするため)。
+  end -= 1
+  if ((lines[to] ?? '').endsWith('\r')) {
+    end -= 1
+  }
+  return { start, end }
+}
+
+/** managed block を 1 か所で識別し、所有権まで判定する。 */
+export function readManagedBlock(text: string, topLevelNotify: unknown): ManagedBlockResult {
+  const { starts, ends, lines } = findMarkerLines(text)
+  const hasAnyMarkerText = text.includes(CODEX_BLOCK_START) || text.includes(CODEX_BLOCK_END)
+
+  if (starts.length === 0 && ends.length === 0) {
+    // marker 文字列が行全体としては無いのに部分一致で現れる = 判別できない。
+    return hasAnyMarkerText
+      ? { kind: 'invalid', reason: 'a marker string appears outside a marker line' }
+      : { kind: 'none' }
+  }
+  if (starts.length !== 1 || ends.length !== 1) {
+    return { kind: 'invalid', reason: 'the managed block markers are not a single pair' }
+  }
+  const [start] = starts
+  const [end] = ends
+  if (start === undefined || end === undefined || end <= start) {
+    return { kind: 'invalid', reason: 'the managed block markers are not in order' }
+  }
+  // marker 文字列が block 以外の場所にも現れるなら判別できない。
+  const blockLines = lines.slice(start, end + 1)
+  const outside = [...lines.slice(0, start), ...lines.slice(end + 1)].join('\n')
+  if (outside.includes(CODEX_BLOCK_START) || outside.includes(CODEX_BLOCK_END)) {
+    return { kind: 'invalid', reason: 'a marker string appears outside the managed block' }
+  }
+
+  const body = blockLines.slice(1, -1).map((line) => line.replace(/\r$/, ''))
+  const previousLines = body.filter((line) => line.startsWith(PREVIOUS_NOTIFY_PREFIX))
+  if (previousLines.length > 1) {
+    return { kind: 'invalid', reason: 'the managed block has more than one previous-notify' }
+  }
+  const tomlBody = body.filter((line) => !line.startsWith(PREVIOUS_NOTIFY_PREFIX)).join('\n')
+
+  // block の中身だけを TOML として読む。file 全体の値は使わない。
+  let blockParsed: Record<string, unknown>
+  try {
+    blockParsed = parseToml(tomlBody) as Record<string, unknown>
+  } catch {
+    return { kind: 'invalid', reason: 'the managed block body is not valid TOML' }
+  }
+  const keys = Object.keys(blockParsed)
+  if (keys.length !== 1 || keys[0] !== 'notify') {
+    return { kind: 'invalid', reason: 'the managed block body defines something other than notify' }
+  }
+  const notifyArgv = asStringArray(blockParsed.notify)
+  if (!isTrackerNotifyArgv(notifyArgv) || notifyArgv === null) {
+    return {
+      kind: 'invalid',
+      reason: 'the notify inside the managed block is not the tracker handler',
+    }
+  }
+
+  const range = lineRangeToOffsets(lines, start, end)
+
+  // file の top-level notify assignment が block の中にあること。
+  // (block が table の中にある / 別の top-level notify がある構成を弾く)
+  const topLevelRange = findTopLevelNotifyRange(text, topLevelNotify)
+  if (
+    topLevelRange === null ||
+    topLevelRange.start < range.start ||
+    topLevelRange.end > range.end ||
+    JSON.stringify(topLevelNotify) !== JSON.stringify(notifyArgv)
+  ) {
+    return {
+      kind: 'invalid',
+      reason: 'the managed block is not the top-level notify of this config',
+    }
+  }
+
+  const previous = decodePreviousNotify(blockLines.join('\n'))
+  if (!previous.ok) {
+    return { kind: 'invalid', reason: previous.reason ?? 'previous-notify is unusable' }
+  }
+  const chain = readChainArgv(notifyArgv)
+  if (chain.kind === 'invalid') {
+    return { kind: 'invalid', reason: 'the chained argv is not valid JSON' }
+  }
+  const chainArgv = chain.kind === 'ok' ? chain.argv : null
+
+  // 退避値と --chain の対応。片方だけある / 中身が食い違うものは復元先を保証できない。
+  if (previous.raw !== null) {
+    const restored = (() => {
+      try {
+        return asStringArray((parseToml(previous.raw) as Record<string, unknown>).notify)
+      } catch {
+        return null
+      }
+    })()
+    if (chainArgv === null || JSON.stringify(restored) !== JSON.stringify(chainArgv)) {
+      return { kind: 'invalid', reason: 'previous-notify does not match the chained argv' }
+    }
+  } else if (chainArgv !== null) {
+    return { kind: 'invalid', reason: 'chained argv has no saved previous-notify' }
+  }
+
+  return {
+    kind: 'owned',
+    view: { range, notifyArgv, notifyRange: topLevelRange, previousRaw: previous.raw, chainArgv },
+  }
 }
 
 function encodePrevious(raw: string): string {
@@ -492,7 +620,7 @@ export function decodePreviousNotify(blockText: string): PreviousNotify {
 }
 
 export function inspectCodexConfig(raw: string, expectedArgv: readonly string[]): CodexInspection {
-  // BOM は parse 前に外す。以降の offset はすべて BOM を除いた本文基準 (re-review 指摘2)。
+  // BOM は parse 前に外す。以降の offset はすべて BOM を除いた本文基準。
   const { body: text } = splitBom(raw)
   let parsed: Record<string, unknown>
   try {
@@ -501,20 +629,14 @@ export function inspectCodexConfig(raw: string, expectedArgv: readonly string[])
     return { state: 'invalid', chainArgv: null, previousRaw: null }
   }
   const notify = parsed.notify
-  const block = findManagedBlock(text)
+  const block = readManagedBlock(text, notify)
 
-  // marker が壊れた形で存在する / block の外にもある場合は、どこまでが tracker の
-  // 書いた範囲か判別できない。利用者データを消さないため書き込みを止める (review 指摘2)。
-  if (hasStrayMarker(text, block)) {
-    return {
-      state: 'corrupt',
-      chainArgv: null,
-      previousRaw: null,
-      reason: 'the managed block markers are not in the expected shape',
-    }
+  if (block.kind === 'invalid') {
+    // 所有権を確認できない config は 1 byte も書かない。
+    return { state: 'corrupt', chainArgv: null, previousRaw: null, reason: block.reason }
   }
 
-  if (block === null) {
+  if (block.kind === 'none') {
     if (notify === undefined) {
       return { state: 'absent', chainArgv: null, previousRaw: null }
     }
@@ -523,7 +645,6 @@ export function inspectCodexConfig(raw: string, expectedArgv: readonly string[])
     if (argv === null) {
       return { state: 'conflict', chainArgv: null, previousRaw: null }
     }
-    // 範囲を安全に特定できない config は触らない。
     if (findTopLevelNotifyRange(text, notify) === null) {
       return {
         state: 'corrupt',
@@ -535,73 +656,12 @@ export function inspectCodexConfig(raw: string, expectedArgv: readonly string[])
     return { state: 'chainable', chainArgv: argv, previousRaw: null }
   }
 
-  if (notify === undefined) {
-    // block はあるのに top-level notify が読めない = 構造が想定外。
-    return {
-      state: 'corrupt',
-      chainArgv: null,
-      previousRaw: null,
-      reason: 'the managed block does not provide a top-level notify',
-    }
-  }
-
-  // marker の形だけでは所有権を判定できない。block 内の notify が tracker 自身の
-  // handler でなければ利用者の設定なので触らない (re-review 指摘1)。
-  if (!isTrackerNotifyArgv(asStringArray(notify))) {
-    return {
-      state: 'corrupt',
-      chainArgv: null,
-      previousRaw: null,
-      reason: 'the notify inside the managed block is not the tracker handler',
-    }
-  }
-
-  const previous = decodePreviousNotify(text.slice(block.range.start, block.range.end))
-  const chain = readChainArgv(asStringArray(notify) ?? [])
-  if (chain.kind === 'invalid') {
-    // 「--chain が無い」と「--chain が壊れている」を区別する (review 指摘3)。
-    return {
-      state: 'corrupt',
-      chainArgv: null,
-      previousRaw: null,
-      reason: 'the chained argv is not valid JSON',
-    }
-  }
-  const chainArgv = chain.kind === 'ok' ? chain.argv : null
-  if (!previous.ok) {
-    return { state: 'corrupt', chainArgv, previousRaw: null, reason: previous.reason }
-  }
-  // 退避値と --chain の不一致は復元先が特定できないので破壊的操作を止める。
-  if (previous.raw !== null) {
-    const restoredArgv = (() => {
-      try {
-        return asStringArray((parseToml(previous.raw) as Record<string, unknown>).notify)
-      } catch {
-        return null
-      }
-    })()
-    if (chainArgv === null || JSON.stringify(restoredArgv) !== JSON.stringify(chainArgv)) {
-      return {
-        state: 'corrupt',
-        chainArgv,
-        previousRaw: null,
-        reason: 'previous-notify does not match the chained argv',
-      }
-    }
-  } else if (chainArgv !== null) {
-    return {
-      state: 'corrupt',
-      chainArgv,
-      previousRaw: null,
-      reason: 'chained argv has no saved previous-notify',
-    }
-  }
-
-  const expected = withChain(expectedArgv, chainArgv)
+  const { view } = block
+  const expected = withChain(expectedArgv, view.chainArgv)
   return {
-    state: sameStrings(notify, expected) ? 'managed' : 'stale',
-    chainArgv,
-    previousRaw: previous.raw,
+    state: sameStrings(view.notifyArgv, expected) ? 'managed' : 'stale',
+    chainArgv: view.chainArgv,
+    previousRaw: view.previousRaw,
   }
 }
 
@@ -637,11 +697,8 @@ export function applyCodexNotify(
   const write = (next: string): void =>
     writeConfigAtomically(integration.codexConfigPath, `${bom}${next}`)
 
-  if (inspection.state === 'invalid') {
-    return { agent: 'codex', ok: false, code: 'INVALID_AGENT_CONFIG' }
-  }
-  if (inspection.state === 'corrupt') {
-    // 退避データが壊れている / 一致しない。復元先を保証できないので何も書かない。
+  if (inspection.state === 'invalid' || inspection.state === 'corrupt') {
+    // TOML が壊れている / 所有権を確認できない。復元先を保証できないので何も書かない。
     return { agent: 'codex', ok: false, code: 'INVALID_AGENT_CONFIG' }
   }
   if (inspection.state === 'conflict') {
@@ -651,18 +708,28 @@ export function applyCodexNotify(
       : { agent: 'codex', ok: false, code: 'CODEX_NOTIFY_CONFLICT' }
   }
 
-  const managed = findManagedBlock(text)?.range ?? null
+  // ここから先は「所有している block がある」か「無い」かのどちらかしかない。
+  const owned = (() => {
+    let parsedNotify: unknown
+    try {
+      parsedNotify = (parseToml(text) as Record<string, unknown>).notify
+    } catch {
+      return null
+    }
+    const block = readManagedBlock(text, parsedNotify)
+    return block.kind === 'owned' ? block.view : null
+  })()
 
   if (mode === 'uninstall') {
-    if (inspection.state === 'absent' || inspection.state === 'chainable' || managed === null) {
+    if (owned === null) {
       return { agent: 'codex', ok: true, state: 'unchanged' }
     }
     // 退避してあった元の assignment を、同じ位置へ byte 単位で書き戻す。
     // 退避が無い (chain していない) 場合は block と直後の改行ごと取り除く。
     const next =
-      inspection.previousRaw === null
-        ? text.slice(0, managed.start) + text.slice(consumeEol(text, managed.end))
-        : text.slice(0, managed.start) + inspection.previousRaw + text.slice(managed.end)
+      owned.previousRaw === null
+        ? text.slice(0, owned.range.start) + text.slice(consumeEol(text, owned.range.end))
+        : text.slice(0, owned.range.start) + owned.previousRaw + text.slice(owned.range.end)
     write(next)
     return { agent: 'codex', ok: true, state: 'removed' }
   }
@@ -671,32 +738,29 @@ export function applyCodexNotify(
     return { agent: 'codex', ok: true, state: 'unchanged' }
   }
 
-  if (inspection.state === 'chainable') {
-    const parsed = parseToml(text) as Record<string, unknown>
-    const range = findTopLevelNotifyRange(text, parsed.notify)
-    if (range === null) {
-      return { agent: 'codex', ok: false, code: 'INVALID_AGENT_CONFIG' }
-    }
-    const raw = text.slice(range.start, range.end)
-    const block = managedCodexBlock(withChain(base, inspection.chainArgv), raw, eol)
-    write(text.slice(0, range.start) + block + text.slice(range.end))
-    return { agent: 'codex', ok: true, state: 'chained' }
-  }
-
-  if (inspection.state === 'stale' && managed !== null) {
+  if (inspection.state === 'stale' && owned !== null) {
     // chain 情報と退避行は保持したまま tracker block だけ作り直す。
-    const block = managedCodexBlock(
-      withChain(base, inspection.chainArgv),
-      inspection.previousRaw,
-      eol,
-    )
-    write(text.slice(0, managed.start) + block + text.slice(managed.end))
+    const block = managedCodexBlock(withChain(base, owned.chainArgv), owned.previousRaw, eol)
+    write(text.slice(0, owned.range.start) + block + text.slice(owned.range.end))
     return { agent: 'codex', ok: true, state: 'updated' }
   }
 
-  // absent: top-level の先頭 (= 最初の table header より前) へ block + 改行を挿入する。
-  // 常に行頭へ入れて `block + 1 改行` だけを足すので、末尾改行の有無に関わらず
-  // uninstall が同じ範囲を取り除いて byte 一致で戻せる (review 指摘1)。
+  if (inspection.state === 'chainable') {
+    const parsedNotify = (parseToml(text) as Record<string, unknown>).notify
+    const range = findTopLevelNotifyRange(text, parsedNotify)
+    if (range === null) {
+      return { agent: 'codex', ok: false, code: 'INVALID_AGENT_CONFIG' }
+    }
+    // 行境界まで広げて退避する (行末コメント・空白も含めて byte 一致で戻す)。
+    const lineRange = expandToLineBounds(text, range)
+    const previousRaw = text.slice(lineRange.start, lineRange.end)
+    const block = managedCodexBlock(withChain(base, inspection.chainArgv), previousRaw, eol)
+    write(text.slice(0, lineRange.start) + block + text.slice(lineRange.end))
+    return { agent: 'codex', ok: true, state: 'chained' }
+  }
+
+  // absent: 本文の先頭へ `block + 改行1つ` を挿入する。常に行頭なので
+  // uninstall が同じ範囲を取り除くだけで byte 一致に戻る。
   const block = managedCodexBlock(base, null, eol)
   write(`${block}${eol}${text}`)
   return { agent: 'codex', ok: true, state: 'installed' }

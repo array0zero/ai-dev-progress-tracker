@@ -1,5 +1,5 @@
-import { type ChildProcess, spawn } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { type ChildProcess, execFileSync, spawn } from 'node:child_process'
+import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -12,6 +12,18 @@ vi.setConfig({ testTimeout: 60_000 })
 
 const PORT = 4321
 const SHUTDOWN_TIMEOUT_MS = 15_000
+
+/** src (tsx) と build 済み dist の両方を同じ条件で確認する。 */
+const SOURCE_ENTRY = ['--import', 'tsx', resolve('src/server/index.ts')]
+const DIST_ENTRY = [resolve('dist/server/index.js')]
+
+/** dist が無ければ server だけ build する (test:all では build 前に走るため)。 */
+function ensureDistEntry(): void {
+  if (existsSync(resolve('dist/server/index.js'))) {
+    return
+  }
+  execFileSync('npm', ['run', 'build:server'], { stdio: 'ignore', shell: true, timeout: 180_000 })
+}
 
 function waitForExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
   return new Promise((resolve_) => {
@@ -76,62 +88,73 @@ describe('server shutdown', () => {
     rmSync(dataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
   })
 
-  it('exits through the watchdog when the parent dies without sending a signal', async () => {
-    // watchdog の対象にする「親」。signal は一切送らず SIGKILL で消す。
-    parent = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' })
-    expect(parent.pid).toBeGreaterThan(0)
-
-    server = spawn(process.execPath, ['--import', 'tsx', resolve('src/server/index.ts')], {
-      env: {
-        ...process.env,
-        TRACKER_DATA_DIR: dataDir,
-        TRACKER_PORT: String(PORT),
-        TRACKER_PARENT_PID: String(parent.pid),
-      },
-      stdio: 'ignore',
-      // process group の連鎖ではなく watchdog 自身で終わることを見る。
-      detached: false,
-    })
-
-    expect(await waitForHealth(PORT, 30_000)).toBe(true)
-    expect(await portIsFree(PORT)).toBe(false)
-
-    parent.kill('SIGKILL')
-    expect(await waitForExit(server, SHUTDOWN_TIMEOUT_MS)).toBe(true)
-
-    // port が解放されている
-    expect(await portIsFree(PORT)).toBe(true)
-
-    // DB handle が閉じている: 別プロセスから開いて読め、data dir ごと削除もできる
-    const db = openDatabase(join(dataDir, 'tracker.db'))
-    try {
-      expect(listProjects(db)).toEqual([])
-    } finally {
-      db.close()
+  function startServer(entry: readonly string[], port: number, parentPid?: number): ChildProcess {
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      TRACKER_DATA_DIR: dataDir,
+      TRACKER_PORT: String(port),
     }
-    rmSync(dataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
-    dataDir = mkdtempSync(join(tmpdir(), 'adpt-shutdown-'))
-  })
+    if (parentPid !== undefined) {
+      env.TRACKER_PARENT_PID = String(parentPid)
+    }
+    // process group の連鎖ではなく watchdog / signal 自身で終わることを見る。
+    return spawn(process.execPath, [...entry], { env, stdio: 'ignore', detached: false })
+  }
 
-  it('exits on SIGTERM as well', async () => {
-    server = spawn(process.execPath, ['--import', 'tsx', resolve('src/server/index.ts')], {
-      env: { ...process.env, TRACKER_DATA_DIR: dataDir, TRACKER_PORT: String(PORT + 1) },
-      stdio: 'ignore',
+  // 実運用 (npm start) と E2E は dist を起動するので、両方の entry で同じ経路を確認する。
+  const entries: Array<[string, () => readonly string[], number]> = [
+    ['source entry (tsx)', () => SOURCE_ENTRY, PORT],
+    [
+      'built entry (dist)',
+      () => {
+        ensureDistEntry()
+        return DIST_ENTRY
+      },
+      PORT + 10,
+    ],
+  ]
+
+  for (const [label, entry, basePort] of entries) {
+    it(`exits through the watchdog when the parent dies without a signal: ${label}`, async () => {
+      // watchdog の対象にする「親」。signal は一切送らず SIGKILL で消す。
+      parent = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' })
+      expect(parent.pid).toBeGreaterThan(0)
+
+      server = startServer(entry(), basePort, parent.pid)
+      expect(await waitForHealth(basePort, 60_000)).toBe(true)
+      expect(await portIsFree(basePort)).toBe(false)
+
+      parent.kill('SIGKILL')
+      expect(await waitForExit(server, SHUTDOWN_TIMEOUT_MS)).toBe(true)
+
+      // port が解放されている
+      expect(await portIsFree(basePort)).toBe(true)
+
+      // DB handle が閉じている: 別プロセスから開いて読め、data dir ごと削除もできる
+      const db = openDatabase(join(dataDir, 'tracker.db'))
+      try {
+        expect(listProjects(db)).toEqual([])
+      } finally {
+        db.close()
+      }
+      rmSync(dataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+      dataDir = mkdtempSync(join(tmpdir(), 'adpt-shutdown-'))
     })
-    expect(await waitForHealth(PORT + 1, 30_000)).toBe(true)
 
-    server.kill('SIGTERM')
-    expect(await waitForExit(server, SHUTDOWN_TIMEOUT_MS)).toBe(true)
-    expect(await portIsFree(PORT + 1)).toBe(true)
-  })
+    it(`exits on SIGTERM: ${label}`, async () => {
+      server = startServer(entry(), basePort + 1)
+      expect(await waitForHealth(basePort + 1, 60_000)).toBe(true)
+
+      server.kill('SIGTERM')
+      expect(await waitForExit(server, SHUTDOWN_TIMEOUT_MS)).toBe(true)
+      expect(await portIsFree(basePort + 1)).toBe(true)
+    })
+  }
 
   it('does not watch anything without TRACKER_PARENT_PID', async () => {
     parent = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' })
-    server = spawn(process.execPath, ['--import', 'tsx', resolve('src/server/index.ts')], {
-      env: { ...process.env, TRACKER_DATA_DIR: dataDir, TRACKER_PORT: String(PORT + 2) },
-      stdio: 'ignore',
-    })
-    expect(await waitForHealth(PORT + 2, 30_000)).toBe(true)
+    server = startServer(SOURCE_ENTRY, PORT + 2)
+    expect(await waitForHealth(PORT + 2, 60_000)).toBe(true)
 
     parent.kill('SIGKILL')
     // 監視していないので生き続ける
