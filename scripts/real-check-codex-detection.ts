@@ -11,10 +11,20 @@
  *   marker script を `--chain` へ渡し、tracker 検知と chain 起動の両方が起きることを見る)。
  * - 登録確認 (server 起動 / browser open) は TRACKER_AGENT_EVENT_PROMPT=off で抑止する。
  * - このリポジトリの working tree / DB は変更しない。
+ * - installer 経路 (install → doctor → repair → uninstall) は、利用者の実 config を
+ *   **temp HOME へ copy したもの**に対して実行する。実 file は読むだけで変更しない。
  */
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs'
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+} from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { runAgentEvent } from '../src/cli/commands/agent-event.js'
@@ -23,6 +33,11 @@ import { runProcess } from '../src/server/adapters/process-runner.js'
 import { loadConfig } from '../src/server/config.js'
 import { listCandidates } from '../src/server/db/candidate-repository.js'
 import { openDatabase } from '../src/server/db/connection.js'
+import {
+  inspectAgentIntegration,
+  resolveIntegration,
+  setupAgents,
+} from '../src/server/services/agent-integration-service.js'
 
 const CODEX_MODEL = 'gpt-5.6-terra'
 const EXEC_TIMEOUT_MS = 180_000
@@ -170,8 +185,7 @@ async function main(): Promise<number> {
     report.chainedNotifyCalled = existsSync(chainMarker)
     if (report.chainedNotifyCalled !== true) {
       report.result = 'FAIL: the chained notify was not started'
-      process.stdout.write(`${JSON.stringify(report, null, 2)}
-`)
+      process.stdout.write(`${JSON.stringify(report, null, 2)}\n`)
       return 1
     }
 
@@ -199,6 +213,51 @@ async function main(): Promise<number> {
     report.repoWorkingTreeUnchanged = repoStatus() === repoStatusBefore
     if (report.userCodexConfigUnchanged !== true || report.repoWorkingTreeUnchanged !== true) {
       report.result = 'FAIL: an isolated resource was modified'
+      process.stdout.write(`${JSON.stringify(report, null, 2)}\n`)
+      return 1
+    }
+
+    // installer 経路 (install → doctor → repair → uninstall) を、利用者の実 config を
+    // copy した temp HOME に対して実行する。実 file は読むだけ。
+    const installerHome = mkdtempSync(join(tmpdir(), 'adpt-real-codex-home-'))
+    try {
+      mkdirSync(join(installerHome, '.codex'), { recursive: true })
+      const copied = join(installerHome, '.codex', 'config.toml')
+      if (existsSync(userCodexConfig)) {
+        copyFileSync(userCodexConfig, copied)
+      }
+      const before = existsSync(copied) ? readFileSync(copied) : Buffer.alloc(0)
+      const installerOptions = { home: installerHome, cliPath }
+
+      report.installerInstall = setupAgents('install', installerOptions)[0]
+      report.installerReadiness = inspectAgentIntegration(installerOptions).codexDetection
+      report.installerRepair = setupAgents('repair', installerOptions)[0]
+      report.installerUninstall = setupAgents('uninstall', installerOptions)[0]
+
+      const after = existsSync(copied) ? readFileSync(copied) : Buffer.alloc(0)
+      report.installerRestoredBytesEqual = after.equals(before)
+      report.installerUsedTempHome =
+        resolveIntegration(installerOptions).codexConfigPath.startsWith(installerHome)
+
+      const okInstaller =
+        (report.installerInstall as { ok?: boolean }).ok === true &&
+        report.installerReadiness === 'ready' &&
+        (report.installerRepair as { ok?: boolean }).ok === true &&
+        (report.installerUninstall as { ok?: boolean }).ok === true &&
+        report.installerRestoredBytesEqual === true &&
+        report.installerUsedTempHome === true
+      if (!okInstaller) {
+        report.result = 'FAIL: the installer round trip over the real config copy failed'
+        process.stdout.write(`${JSON.stringify(report, null, 2)}\n`)
+        return 1
+      }
+    } finally {
+      rmSync(installerHome, { recursive: true, force: true })
+    }
+
+    report.userCodexConfigStillUnchanged = sha256OfFile(userCodexConfig) === userConfigBefore
+    if (report.userCodexConfigStillUnchanged !== true) {
+      report.result = 'FAIL: the real user config changed'
       process.stdout.write(`${JSON.stringify(report, null, 2)}\n`)
       return 1
     }

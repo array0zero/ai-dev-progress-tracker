@@ -25,6 +25,29 @@ async function main(): Promise<void> {
   // listen host は config で `127.0.0.1` 固定 (env で変更不可)。internet 公開しない。
   await app.listen({ host: config.host, port: config.port })
   logger.info('server listening', { host: config.host, port: config.port })
+
+  // 親 (Playwright webServer / npm start) から止められたときに listen socket と
+  // SQLite handle を確実に閉じる。閉じ忘れると Windows で temp dir が掴まれたままになる。
+  let shuttingDown = false
+  const shutdown = (signal: NodeJS.Signals): void => {
+    if (shuttingDown) {
+      return
+    }
+    shuttingDown = true
+    logger.info('server shutting down', { signal })
+    void app
+      .close()
+      .catch(() => undefined)
+      .finally(() => {
+        if (db.open) {
+          db.close()
+        }
+        process.exit(0)
+      })
+  }
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
+    process.on(signal, () => shutdown(signal))
+  }
 }
 
 main().catch((error: unknown) => {

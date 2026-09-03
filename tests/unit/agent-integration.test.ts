@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -10,6 +10,7 @@ import {
   inspectAgentIntegration,
   resolveIntegration,
   setupAgents,
+  setWriteFaultsForTest,
 } from '../../src/server/services/agent-integration-service.js'
 
 const NODE_PATH = 'D:/node/node.exe'
@@ -286,9 +287,15 @@ describe('Codex notify chain (DESIGN v2.2 D006)', () => {
     expect(inspectAgentIntegration(options()).codexDetection).toBe('ready')
   })
 
-  it('restores the original notify line byte-for-byte on uninstall', () => {
-    const original = `# user config\n${EXISTING_LINE}\n\n[tui]\ntheme = "dark"\n`
+  it('restores the original config bytes on uninstall', () => {
+    const original = `# user config
+${EXISTING_LINE}
+
+[tui]
+theme = "dark"
+`
     writeCodex(original)
+    const originalBytes = readFileSync(codexPath())
 
     setupAgents('install', options())
     expect(setupAgents('uninstall', options())[0]).toEqual({
@@ -296,9 +303,9 @@ describe('Codex notify chain (DESIGN v2.2 D006)', () => {
       ok: true,
       state: 'removed',
     })
-    expect(readCodex()).toContain(EXISTING_LINE)
+    // 名前どおり全体 byte 一致で検証する (review 指摘4)
+    expect(readFileSync(codexPath()).equals(originalBytes)).toBe(true)
     expect(readCodex()).not.toContain(CODEX_BLOCK_START)
-    expect(JSON.parse(String(notifyArgv() ? JSON.stringify(notifyArgv()) : '[]'))).toEqual(EXISTING)
   })
 
   it('keeps the chained argv through install -> install and --repair', () => {
@@ -364,5 +371,210 @@ describe('Codex notify chain (DESIGN v2.2 D006)', () => {
 
     setupAgents('uninstall', options())
     expect(readCodex()).not.toContain('notify = ')
+  })
+})
+
+describe('Codex notify chain hardening (review findings 1-4)', () => {
+  let home: string
+
+  const options = (cliPath = CLI_PATH) => ({ home, nodePath: NODE_PATH, cliPath })
+  const codexPath = (): string => join(home, '.codex', 'config.toml')
+  const readCodexBytes = (): Buffer => readFileSync(codexPath())
+  const readCodex = (): string => readFileSync(codexPath(), 'utf8')
+
+  function writeCodexBytes(text: string): Buffer {
+    mkdirSync(join(home, '.codex'), { recursive: true })
+    writeFileSync(codexPath(), text, 'utf8')
+    return readFileSync(codexPath())
+  }
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'adpt-chain-hard-'))
+  })
+
+  afterEach(() => {
+    setWriteFaultsForTest({})
+    rmSync(home, { recursive: true, force: true })
+  })
+
+  // --- 指摘1: 退避データの検証 ------------------------------------------
+
+  const corruptions: Array<[string, (encoded: string) => string]> = [
+    ['invalid base64', () => '%%%not-base64%%%'],
+    ['empty value', () => ''],
+    ['valid base64 but not TOML', () => Buffer.from('!!! broken', 'utf8').toString('base64')],
+    ['TOML without a notify array', () => Buffer.from('model = "x"', 'utf8').toString('base64')],
+    [
+      'notify that does not match --chain',
+      () => Buffer.from('notify = ["different-notifier"]', 'utf8').toString('base64'),
+    ],
+  ]
+
+  for (const [label, corrupt] of corruptions) {
+    it(`refuses every destructive operation when previous-notify is ${label}`, () => {
+      writeCodexBytes('notify = ["C:/tools/other.exe", "turn-ended"]\n\n[tui]\ntheme = "dark"\n')
+      setupAgents('install', options())
+
+      const installed = readCodex()
+      const encoded = installed
+        .split('\n')
+        .find((line) => line.startsWith('# previous-notify: '))
+        ?.slice('# previous-notify: '.length)
+      expect(encoded).toBeDefined()
+      const broken = installed.replace(encoded ?? '', corrupt(encoded ?? ''))
+      const brokenBytes = writeCodexBytes(broken)
+
+      // doctor は ready にしない
+      expect(inspectAgentIntegration(options()).codexDetection).toBe('invalid_config')
+
+      // repair / uninstall / install はいずれも失敗し、file を 1 byte も変えない
+      for (const mode of ['install', 'repair', 'uninstall'] as const) {
+        expect(setupAgents(mode, options())[0]).toEqual({
+          agent: 'codex',
+          ok: false,
+          code: 'INVALID_AGENT_CONFIG',
+        })
+        expect(readCodexBytes().equals(brokenBytes)).toBe(true)
+      }
+    })
+  }
+
+  it('refuses when a chained argv has no saved previous-notify', () => {
+    writeCodexBytes('notify = ["C:/tools/other.exe", "turn-ended"]\n')
+    setupAgents('install', options())
+    const stripped = readCodex()
+      .split('\n')
+      .filter((line) => !line.startsWith('# previous-notify: '))
+      .join('\n')
+    const strippedBytes = writeCodexBytes(stripped)
+
+    expect(inspectAgentIntegration(options()).codexDetection).toBe('invalid_config')
+    expect(setupAgents('uninstall', options())[0]).toMatchObject({ ok: false })
+    expect(readCodexBytes().equals(strippedBytes)).toBe(true)
+  })
+
+  // --- 指摘2: 文字列 / comment を含む notify の範囲検出 --------------------
+
+  it('keeps later tables intact when the notify argv contains brackets', () => {
+    const original = [
+      '# user config',
+      'notify = ["other[notifier", "turn]ended", "# not a comment"]',
+      '',
+      '[tui]',
+      'theme = "dark"',
+      '',
+      '[mcp_servers.demo]',
+      'command = "demo"',
+      '',
+    ].join('\n')
+    writeCodexBytes(original)
+
+    expect(setupAgents('install', options())[0]).toMatchObject({ ok: true, state: 'chained' })
+
+    const installed = readCodex()
+    expect(installed).toContain('[tui]')
+    expect(installed).toContain('theme = "dark"')
+    expect(installed).toContain('[mcp_servers.demo]')
+    expect(installed).toContain('command = "demo"')
+    const chained = JSON.parse(
+      (
+        JSON.parse(
+          installed
+            .split('\n')
+            .find((line) => line.startsWith('notify = '))
+            ?.replace('notify = ', '') ?? '[]',
+        ) as string[]
+      )[8] ?? '[]',
+    ) as string[]
+    expect(chained).toEqual(['other[notifier', 'turn]ended', '# not a comment'])
+  })
+
+  it('handles a multi-line array with comments and restores it byte-for-byte', () => {
+    const original = [
+      'notify = [ # ここに ] を書いても壊れない',
+      '  "C:/tools/other.exe", # 実行体',
+      '  "turn-ended",',
+      ']',
+      '',
+      '[tui]',
+      'theme = "dark"',
+      '',
+    ].join('\n')
+    const originalBytes = writeCodexBytes(original)
+
+    expect(setupAgents('install', options())[0]).toMatchObject({ ok: true, state: 'chained' })
+    expect(readCodex()).toContain('[tui]')
+
+    expect(setupAgents('uninstall', options())[0]).toMatchObject({ ok: true, state: 'removed' })
+    expect(readCodexBytes().equals(originalBytes)).toBe(true)
+  })
+
+  // --- 指摘3: 書き込みの原子性 -------------------------------------------
+
+  it('leaves the config untouched when the write fails midway', () => {
+    const original = 'notify = ["C:/tools/other.exe", "turn-ended"]\n\n[tui]\ntheme = "dark"\n'
+    const originalBytes = writeCodexBytes(original)
+
+    setWriteFaultsForTest({
+      afterTempWrite: () => {
+        throw new Error('disk full')
+      },
+    })
+    expect(() => setupAgents('install', options())).toThrow('disk full')
+    expect(readCodexBytes().equals(originalBytes)).toBe(true)
+    // temp file を残さない
+    expect(readdirSync(join(home, '.codex'))).toEqual(['config.toml'])
+  })
+
+  // --- 指摘4: byte-for-byte 復元 -----------------------------------------
+
+  const restoreCases: Array<[string, string]> = [
+    ['LF only', 'notify = ["C:/tools/other.exe", "turn-ended"]\n\n[tui]\ntheme = "dark"\n'],
+    [
+      'CRLF',
+      '# user config\r\nnotify = ["C:/tools/other.exe", "turn-ended"]\r\n\r\n[tui]\r\ntheme = "dark"\r\n',
+    ],
+    [
+      'trailing whitespace after the assignment',
+      'notify = ["C:/tools/other.exe", "turn-ended"]   \n\n[tui]\ntheme = "dark"\n',
+    ],
+    [
+      'leading blank lines',
+      '\n\n\nnotify = ["C:/tools/other.exe", "turn-ended"]\n[tui]\ntheme = "dark"\n',
+    ],
+    ['no trailing newline', 'notify = ["C:/tools/other.exe", "turn-ended"]'],
+    ['inline comment after the assignment', 'notify = ["a", "b"] # keep me\n[tui]\nx = 1\n'],
+  ]
+
+  for (const [label, original] of restoreCases) {
+    it(`restores the exact original bytes on uninstall (${label})`, () => {
+      const originalBytes = writeCodexBytes(original)
+
+      expect(setupAgents('install', options())[0]).toMatchObject({ ok: true, state: 'chained' })
+      expect(readCodexBytes().equals(originalBytes)).toBe(false)
+
+      expect(setupAgents('uninstall', options())[0]).toMatchObject({ ok: true, state: 'removed' })
+      expect(readCodexBytes().equals(originalBytes)).toBe(true)
+    })
+  }
+
+  it('restores the exact original bytes when there was no notify at all', () => {
+    const original = '# user config\nmodel = "gpt-5.6-terra"\n\n[tui]\ntheme = "dark"\n'
+    const originalBytes = writeCodexBytes(original)
+
+    expect(setupAgents('install', options())[0]).toMatchObject({ ok: true, state: 'installed' })
+    expect(setupAgents('uninstall', options())[0]).toMatchObject({ ok: true, state: 'removed' })
+    expect(readCodexBytes().equals(originalBytes)).toBe(true)
+  })
+
+  it('keeps the original bytes across install -> repair -> uninstall', () => {
+    const original = '# user\r\nnotify = ["C:/tools/other.exe", "turn-ended"]\r\n[tui]\r\nx = 1\r\n'
+    const originalBytes = writeCodexBytes(original)
+
+    setupAgents('install', options())
+    setupAgents('repair', options(MOVED_CLI_PATH))
+    expect(readCodex()).toContain(MOVED_CLI_PATH)
+    setupAgents('uninstall', options(MOVED_CLI_PATH))
+    expect(readCodexBytes().equals(originalBytes)).toBe(true)
   })
 })

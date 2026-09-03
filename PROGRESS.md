@@ -71,3 +71,22 @@ v1.3〜v1.7 (T001〜T020) の記録は `PROGRESS-v1.md` を参照。
 | 23 | 課金画面の確認 | 追加固定費 0 円/月、追加従量課金 0 円/月 |
 
 利用者が実施したら、結果をこの表へ追記して T025 を完了にする。
+
+## Codex レビュー指摘への対応 (2026-09-03)
+
+| # | 判定 | 対応 |
+|---:|---|---|
+| 1 | **妥当・修正** | `previous-notify` の base64 を無検証で使っていた。`decodePreviousNotify` で (a) base64 の往復一致 (`Buffer.from(x,'base64').toString('base64') === x`)、(b) 復号結果が TOML として parse できること、(c) `notify` が string 配列であること、(d) managed argv の `--chain` と一致することを検証し、いずれか欠けたら state=`corrupt` とした。`corrupt` では doctor readiness が `invalid_config`(= ready にしない)、install / repair / uninstall はすべて `INVALID_AGENT_CONFIG` を返して **file を 1 byte も書かない**。退避行が無いのに `--chain` がある場合も同じ扱い。回帰テスト 6 件 (不正 base64 / 空 / TOML 不正 / notify 配列でない / chain 不一致 / 退避欠落) で 3 mode すべての無変更を byte 比較で固定。 |
+| 2 | **妥当・修正** | `[`/`]` の単純カウントで raw 範囲を求めていたため、argv 内の `[` で範囲がずれ `[tui]` 以下を巻き込んでいた。文字列 (basic / literal / multi-line) と comment を認識する走査 (`scanValueEnd` / `skipString` / `skipComment`) へ置換し、top-level 判定も table header を認識して行う。さらに **求めた範囲を単独で再 parse し、値が元と一致しない場合は範囲不明として無変更で停止**する自己検証を追加。回帰テスト: `notify = ["other[notifier", "turn]ended", "# not a comment"]` で `[tui]` / `[mcp_servers.demo]` が残ること、comment 付き複数行配列の byte 一致復元。 |
+| 3 | **妥当・修正** | `writeFileSync` の直接上書きを `writeConfigAtomically` へ置換 (temp file へ完全書込み → 読み直し検証 → `renameSync` で atomic replace → temp を必ず後始末)。`setWriteFaultsForTest` seam を追加し、temp 書込み直後に例外を注入する fault test で「元 config が byte 一致のまま」「temp file が残らない」ことを固定。 |
+| 4 | **妥当・修正** | 復元が byte 一致でなかった (行分割 → join で CRLF・末尾空白・先頭空行が変化)。offset ベースの splice へ変更し、退避も **assignment の raw bytes** をそのまま保存する形にした。旧テストの `toContain` 検査は全体 Buffer 比較へ書き換え、CRLF / 末尾空白 / 先頭空行 / 末尾改行なし / inline comment / notify 不在 / install→repair→uninstall の 8 ケースを追加。 |
+| 5 | **妥当・対応 (実機は利用者へ)** | installer 経路が実 config 内容を通っていなかった。`real:codex-detection` へ「利用者の実 `~/.codex/config.toml` を temp HOME へ **copy** し、install → doctor → repair → uninstall を実行して **元 bytes と全体一致で復元**する」検証を追加。実機結果: install=`chained` / readiness=`ready` / repair=`unchanged` / uninstall=`removed` / 復元 byte 一致 = true、実 file の SHA-256 は前後不変。指示どおり実 config への `setup-agents` は実行していない (T025 #4 として利用者が実施)。 |
+| 6 | **再現せず・teardown は確認済み** | `npm run test:e2e` は当環境で 33 件 pass / exit 0 / 10.5〜17 秒で正常終了し、実行後の node プロセス数も増えない (before=after)。Codex 環境固有と判断。ただし teardown 強化として server へ SIGINT/SIGTERM/SIGHUP の graceful shutdown (listen socket と SQLite handle を閉じてから exit 0) を追加した。あわせて、`GET /api/projects` が **存在しない local path にも `git` を spawn していた**点を修正 (E2E が蓄積した seed project 分だけ子プロセスが増え、遅い環境で assertion timeout を誘発しうる)。修正後は e2e が 13.4s → 10.5s へ短縮し、3 回連続 33/33 pass。 |
+
+補足: 互換固定ファイル (`db/migrations/001_init.sql` / `schemas/progress-output.schema.json` /
+`schemas/backup-v1.schema.json`) は v2 作業で 1 度も変更していない (`git log` の最終変更は v1 期。
+T002 の byte 一致 golden テストでも継続確認)。
+
+検証: `npm run test:all` (lint / typecheck / unit+integration 309 件 / build / e2e 33 件)、
+`npm run verify:secrets` (hit 0 / forbiddenDependencies 0)、`npm run real:codex-detection` PASS、
+`node dist/cli/index.js doctor` exit 0。DESIGN.md は revision 2.3 (D027 追加) へ更新。

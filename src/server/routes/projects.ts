@@ -199,7 +199,8 @@ export function projectRoutes(db: Db): FastifyPluginAsync {
   return async (app) => {
     app.get('/projects', async () => {
       const projects = listProjects(db)
-      const heads = await readHeads(projects)
+      // local path が消えている project へ git を spawn しない (local_missing はそのまま反映)。
+      const heads = await readHeads(projects.filter((project) => existsSync(project.localPath)))
       return projects.map((project) => toSummaryV2(db, project, heads.get(project.id) ?? null))
     })
 
@@ -209,7 +210,7 @@ export function projectRoutes(db: Db): FastifyPluginAsync {
       if (project === null) {
         return reply.code(404).send(errorBody('PROJECT_NOT_FOUND', 'Project not found.'))
       }
-      const heads = await readHeads([project])
+      const heads = existsSync(project.localPath) ? await readHeads([project]) : new Map()
       const v2 = toSummaryV2(db, project, heads.get(project.id) ?? null)
       const result = buildProjectDetail(db, id)
       if (!result.ok) {

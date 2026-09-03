@@ -1,10 +1,11 @@
 # DESIGN.md — 設計書
 
 project_id: ai-dev-progress-tracker  
-version: 2.2  
-date: 2026-09-02  
+version: 2.3  
+date: 2026-09-03  
 source: PLAN.md v1.1 + 公開 `ai-dev-progress-tracker` commit `c281f91` / DESIGN.md v1.7 + 2026-09-02実測環境  
-revision 2.2: D006 (Codex notify) を「競合エラー」から「既存notifyを退避してchain」へ変更
+revision 2.2: D006 (Codex notify) を「競合エラー」から「既存notifyを退避してchain」へ変更  
+revision 2.3: D027 追加。chain の退避データ検証・TOML認識の範囲検出・atomic write・byte一致復元を固定
 
 ## 0. 受入検査・実測環境・v1.3〜v1.7互換インベントリ
 
@@ -175,10 +176,19 @@ v2追加:
 2. `notify`未設定なら、最初のtable headerより前へmanaged blockを挿入する。既存文字列・コメント・table順は変更しない。
 3. tracker managed blockが存在しargvが一致すればno-op。
 4. 別の`notify`が**string配列**として存在する場合は **chain** する。
-   - 既存`notify`のraw行をbase64化して managed block内の `# previous-notify:` 行へ退避する。
-   - 既存の raw 行を削除し、同じ位置へ managed block を挿入する。
+   - 既存`notify` assignment の**raw bytes**をbase64化して managed block内の `# previous-notify:` 行へ退避する。
+   - 既存 assignment の範囲を managed block へ置換する。file の他の位置は 1 byte も変更しない。
    - tracker argvへ `--chain <既存argvのJSON>` を追加する。
    - 既存argvがstring配列でない場合だけ **`CODEX_NOTIFY_CONFLICT`** とし、無変更で停止する。
+4-1. 範囲検出は文字列 (basic / literal / multi-line) と comment を認識して行う。
+   `[` `]` `#` を含む値でも誤検出しない。求めた範囲を単独で再parseし、値が元と一致しない場合は
+   **範囲不明として無変更で停止**する。
+4-2. `# previous-notify:` は使用前に必ず検証する。base64の往復一致、TOMLとしてのparse、
+   `notify`がstring配列であること、`--chain`のargvと一致することをすべて満たさない場合は
+   `INVALID_AGENT_CONFIG`とし、install / repair / uninstall のいずれも**書き込みを行わない**。
+   doctorもこの状態を`ready`にしない。
+4-3. `config.toml`への書き込みは temp file への完全書込み → 読み直し検証 → atomic rename で行う。
+   途中で失敗しても元 file と退避データを同時に失わない。temp file は必ず後始末する。
 5. managed blockにはsetup時点の `process.execPath` と `<repo>/dist/cli/index.js` の**絶対パス**を入れる。
 6. repository移動後は`doctor`が`AGENT_HOOK_PATH_STALE`を返し、`setup-agents --repair`でtracker managed blockだけ再生成する。退避済み `# previous-notify:` は再生成後も保持する。
 7. notifyのJSONは末尾argvとして受け、`type=agent-turn-complete`以外は無視する。
@@ -189,7 +199,10 @@ v2追加:
    - chain対象のspawn失敗・非0終了・timeoutはtracker側の検知を止めない。
    - tracker側の失敗 (DB/candidate/server/browser) はchain対象の実行を妨げない。
    - `--chain`の値がJSONとしてparseできない場合はchainをskipし、検知だけ続行する。
-10. `setup-agents --uninstall` は managed block を削除し、`# previous-notify:` があればbase64を復号して**元のraw行をそのまま書き戻す**。退避がなければ block ごと削除する。
+10. `setup-agents --uninstall` は managed block を削除し、`# previous-notify:` があれば復号した
+   **元の raw bytes をそのまま同じ位置へ書き戻す**。退避がなければ block と直後の1改行を削除する。
+   いずれの経路でも、install前のfileと**全体byte一致**で戻ることをテストで固定する
+   (CRLF / 末尾空白 / 先頭空行 / 末尾改行なし / inline comment を含む)。
 
 ```toml
 # >>> ai-dev-progress-tracker managed notify >>>
@@ -1090,6 +1103,7 @@ agent-eventがserver未起動なら同じbuildの`dist/server/index.js`をdetach
 | D023 | UI performance | harnessとactual記録を別task | 想定expected禁止 | 事前fixture: 却下 |
 | D024 | real external tests | temp local + dedicated Private fixture repo | fake完結防止とuser data保護 | production repo試験: 却下 |
 | D025 | exact OS/browser未計測 | implementationをblockせずT025で識別情報だけ記録 | viewportは取得済み、追加質問不要 | 推測記載: 却下 |
+| D027 | Codex config 書換えの安全性 | (1) 退避base64は往復一致・TOML parse・`--chain`一致まで検証し、不一致なら破壊的操作を行わず`INVALID_AGENT_CONFIG`。(2) notify範囲検出は文字列/commentを認識し、求めた範囲の再parseで自己検証。(3) 書込みは temp file → 検証 → atomic rename。(4) 復元は全体byte一致でテストする | レビューで「破損base64をdoctorがready判定し、uninstallが既存notifyを消す」「argv内の`[`で範囲がずれ`[tui]`以下が消える」「非atomic書込みで元configと退避を同時に失う」「byte-for-byteテストが実際は部分一致だった」を再現。いずれもuser configの破壊につながるため、検出できない限り書かない方針へ統一した | 行分割ベースの範囲検出を維持: 却下。base64を無検証で使う: 却下 (2026-09-03 revision 2.3) |
 | D026 | v1.7 recovery互換 | `c281f91`のprompt固定契約、`needs_input`正規化、不正decision item除去、default recovery fixtureのstatus/evidence中心評価をv2互換契約へ追加 | schema自体は不変でも生成受理・品質評価の意味が変わっており、これを落とすと薄いevidenceでsnapshotが消える不具合や自然言語表現揺れによる誤failへ回帰する | schemaだけを互換対象にする: 却下 |
 
 ## 11. 要判断事項（ユーザー確認待ち）
