@@ -160,6 +160,13 @@ function asStringArray(value: unknown): string[] | null {
   return value.every((item) => typeof item === 'string') ? (value as string[]) : null
 }
 
+const BOM = '﻿'
+
+/** UTF-8 BOM を本文から切り離す。TOML parser は BOM 付き文字列を受け付けない。 */
+export function splitBom(text: string): { bom: string; body: string } {
+  return text.startsWith(BOM) ? { bom: BOM, body: text.slice(1) } : { bom: '', body: text }
+}
+
 /** file が使っている改行。混在時は最初に現れたものへ合わせる。 */
 function detectEol(text: string): string {
   return /\r\n/.test(text) && !/(^|[^\r])\n/.test(text.replace(/\r\n/g, '')) ? '\r\n' : '\n'
@@ -344,6 +351,30 @@ function readChainArgv(argv: readonly string[]): ChainRead {
   return argvValue === null ? { kind: 'invalid' } : { kind: 'ok', argv: argvValue }
 }
 
+/**
+ * argv が tracker の notify handler かどうかを内容で判定する (re-review 指摘1)。
+ * setup 時点の絶対 path に依存させない (repository 移動後の repair も所有と見なす)。
+ */
+export function isTrackerNotifyArgv(argv: readonly string[] | null): boolean {
+  if (argv === null || argv.length < 7) {
+    return false
+  }
+  const [, cliPath, command, agentFlag, agent, inputFlag, input, ...rest] = argv
+  if (
+    cliPath === undefined ||
+    !/[\\/]cli[\\/]index\.js$/.test(cliPath) ||
+    command !== 'agent-event' ||
+    agentFlag !== '--agent' ||
+    agent !== 'codex' ||
+    inputFlag !== '--input' ||
+    input !== 'argv'
+  ) {
+    return false
+  }
+  // 末尾は「無い」か `--chain <json>` だけ。
+  return rest.length === 0 || (rest.length === 2 && rest[0] === '--chain')
+}
+
 export interface ManagedBlock {
   range: TextRange
   /** marker 対で囲まれた中身が tracker block の形をしているか (review 指摘2)。 */
@@ -460,7 +491,9 @@ export function decodePreviousNotify(blockText: string): PreviousNotify {
   return { ok: true, raw }
 }
 
-export function inspectCodexConfig(text: string, expectedArgv: readonly string[]): CodexInspection {
+export function inspectCodexConfig(raw: string, expectedArgv: readonly string[]): CodexInspection {
+  // BOM は parse 前に外す。以降の offset はすべて BOM を除いた本文基準 (re-review 指摘2)。
+  const { body: text } = splitBom(raw)
   let parsed: Record<string, unknown>
   try {
     parsed = parseToml(text) as Record<string, unknown>
@@ -509,6 +542,17 @@ export function inspectCodexConfig(text: string, expectedArgv: readonly string[]
       chainArgv: null,
       previousRaw: null,
       reason: 'the managed block does not provide a top-level notify',
+    }
+  }
+
+  // marker の形だけでは所有権を判定できない。block 内の notify が tracker 自身の
+  // handler でなければ利用者の設定なので触らない (re-review 指摘1)。
+  if (!isTrackerNotifyArgv(asStringArray(notify))) {
+    return {
+      state: 'corrupt',
+      chainArgv: null,
+      previousRaw: null,
+      reason: 'the notify inside the managed block is not the tracker handler',
     }
   }
 
@@ -581,22 +625,17 @@ function managedCodexBlock(
   return lines.join(eol)
 }
 
-/** managed block を差し込む位置。 */
-function insertOffsetForBlock(text: string): number {
-  // 常に file 先頭 (BOM があればその直後)。行頭が保証されるので
-  // `block + 1 改行` の挿入と除去が byte 一致で往復する (review 指摘1)。
-  // top-level なので「最初の table header より前」も自動的に満たす。
-  return text.startsWith('﻿') ? 1 : 0
-}
-
 export function applyCodexNotify(
   integration: ResolvedIntegration,
   mode: 'install' | 'uninstall',
 ): AgentSetupOutcome {
   const base = codexNotifyArgv(integration.nodePath, integration.cliPath)
-  const text = readTextOrEmpty(integration.codexConfigPath)
+  const { bom, body: text } = splitBom(readTextOrEmpty(integration.codexConfigPath))
   const inspection = inspectCodexConfig(text, base)
   const eol = detectEol(text)
+  // 書き戻すときに BOM を復元する。
+  const write = (next: string): void =>
+    writeConfigAtomically(integration.codexConfigPath, `${bom}${next}`)
 
   if (inspection.state === 'invalid') {
     return { agent: 'codex', ok: false, code: 'INVALID_AGENT_CONFIG' }
@@ -624,7 +663,7 @@ export function applyCodexNotify(
       inspection.previousRaw === null
         ? text.slice(0, managed.start) + text.slice(consumeEol(text, managed.end))
         : text.slice(0, managed.start) + inspection.previousRaw + text.slice(managed.end)
-    writeConfigAtomically(integration.codexConfigPath, next)
+    write(next)
     return { agent: 'codex', ok: true, state: 'removed' }
   }
 
@@ -640,10 +679,7 @@ export function applyCodexNotify(
     }
     const raw = text.slice(range.start, range.end)
     const block = managedCodexBlock(withChain(base, inspection.chainArgv), raw, eol)
-    writeConfigAtomically(
-      integration.codexConfigPath,
-      text.slice(0, range.start) + block + text.slice(range.end),
-    )
+    write(text.slice(0, range.start) + block + text.slice(range.end))
     return { agent: 'codex', ok: true, state: 'chained' }
   }
 
@@ -654,20 +690,15 @@ export function applyCodexNotify(
       inspection.previousRaw,
       eol,
     )
-    writeConfigAtomically(
-      integration.codexConfigPath,
-      text.slice(0, managed.start) + block + text.slice(managed.end),
-    )
+    write(text.slice(0, managed.start) + block + text.slice(managed.end))
     return { agent: 'codex', ok: true, state: 'updated' }
   }
 
   // absent: top-level の先頭 (= 最初の table header より前) へ block + 改行を挿入する。
   // 常に行頭へ入れて `block + 1 改行` だけを足すので、末尾改行の有無に関わらず
   // uninstall が同じ範囲を取り除いて byte 一致で戻せる (review 指摘1)。
-  const offset = insertOffsetForBlock(text)
   const block = managedCodexBlock(base, null, eol)
-  const next = `${text.slice(0, offset)}${block}${eol}${text.slice(offset)}`
-  writeConfigAtomically(integration.codexConfigPath, next)
+  write(`${block}${eol}${text}`)
   return { agent: 'codex', ok: true, state: 'installed' }
 }
 

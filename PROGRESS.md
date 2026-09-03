@@ -114,3 +114,23 @@ block 内に利用者行がある場合の全 mode 無変更 / 不正 JSON の `
 `npm run verify:secrets` hit 0 件、`npm run real:codex-detection` PASS
 (実 config の copy に対する install→doctor→repair→uninstall が byte 一致復元、実 file は未変更)。
 DESIGN.md は revision 2.4 (D028 追加) へ更新。
+
+## Codex 再々レビュー指摘への対応 (2026-09-03)
+
+| # | 判定 | 対応 |
+|---:|---|---|
+| 1 | **妥当・修正** | marker 対と中身の「形」だけでは所有権を保証できず、正しい marker 対の中に**利用者自身の notify** がある config を `stale` と誤認して上書き・消失させていた。`isTrackerNotifyArgv` を追加し、block 内 notify の argv が `[<node>, <...>/cli/index.js, "agent-event", "--agent", "codex", "--input", "argv"]` (末尾は無しか `--chain <json>` のみ) であることまで検証する。tracker の handler でなければ `corrupt` とし、doctor は ready にせず install・repair・uninstall すべて `INVALID_AGENT_CONFIG` で**無変更**。判定は内容だけで行うため、repository 移動後の `--repair` は従来どおり所有と認識する (path 非依存)。 |
+| 2 | **妥当・修正** | BOM 付き config を BOM ごと TOML parser へ渡していたため `INVALID_AGENT_CONFIG` になり、DESIGN v2.4 の BOM 対応経路へ到達していなかった。`splitBom` で **parse 前に BOM を切り離し**、以降の offset は本文基準で扱い、書き戻し時に BOM を先頭へ復元する。BOM のみ / BOM + top-level 値 / BOM + table / BOM + 既存 notify の 4 ケースで install→uninstall の **全体 byte 一致**と、install 後も本文が TOML として parse できることを固定。 |
+| 3 | **妥当・追加** | watchdog 経路を直接検証する `tests/integration/server-shutdown.test.ts` を追加。親プロセスを **SIGKILL で消し (server へは signal を送らない)**、(a) server プロセスの終了、(b) port の解放 (同じ port へ listen できる)、(c) DB close (別プロセスから再 open して読め、data dir を削除できる) を確認する。あわせて SIGTERM 経路と、`TRACKER_PARENT_PID` 未指定なら親が消えても終了しないことも固定した。実測: watchdog 経由の終了は約 2.3 秒。 |
+
+追加回帰テスト (unit +9 件 / integration +3 件、合計 333 件):
+block 内が利用者 notify の場合の全 mode 無変更 (利用者 notify と `[tui]` が残ることも確認) /
+tracker に似た 4 種の偽 argv を拒否 / 移動後も所有と認識して repair できる /
+`--chain` 付き argv を所有と認める / BOM 4 ケースの byte 一致往復 / `splitBom` の単体 /
+watchdog・SIGTERM・未指定時の 3 経路。
+
+検証: `npm run test:all` exit 0 (lint / typecheck / unit+integration 333 件 / build / e2e 33 件、
+50 秒、node プロセス数 7→7)、`npm run verify:secrets` hit 0 件、
+`npm run real:codex-detection` PASS (実 config の copy に対する install→doctor→repair→uninstall が
+byte 一致復元、実 file は未変更)。DESIGN.md は revision 2.5 (D029 追加、directory tree へ
+`server-shutdown.test.ts` を追記) へ更新。

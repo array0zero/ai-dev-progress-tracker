@@ -9,9 +9,11 @@ import {
   claudeHookArgs,
   codexNotifyArgv,
   inspectAgentIntegration,
+  isTrackerNotifyArgv,
   resolveIntegration,
   setupAgents,
   setWriteFaultsForTest,
+  splitBom,
 } from '../../src/server/services/agent-integration-service.js'
 
 const NODE_PATH = 'D:/node/node.exe'
@@ -740,5 +742,147 @@ describe('Codex notify chain hardening (re-review findings 1-3)', () => {
     expect(readText()).not.toContain('previous-notify')
     expect(inspectAgentIntegration(options()).codexDetection).toBe('ready')
     expect(setupAgents('install', options())[0]).toMatchObject({ ok: true, state: 'unchanged' })
+  })
+})
+
+describe('Codex notify chain hardening (third review findings 1-2)', () => {
+  let home: string
+
+  const options = (cliPath = CLI_PATH) => ({ home, nodePath: NODE_PATH, cliPath })
+  const codexPath = (): string => join(home, '.codex', 'config.toml')
+  const readBytes = (): Buffer => readFileSync(codexPath())
+  const readText = (): string => readFileSync(codexPath(), 'utf8')
+
+  function write(text: string): Buffer {
+    mkdirSync(join(home, '.codex'), { recursive: true })
+    writeFileSync(codexPath(), text, 'utf8')
+    return readFileSync(codexPath())
+  }
+
+  function expectAllModesUnchanged(bytes: Buffer): void {
+    for (const mode of ['install', 'repair', 'uninstall'] as const) {
+      expect(setupAgents(mode, options())[0]).toEqual({
+        agent: 'codex',
+        ok: false,
+        code: 'INVALID_AGENT_CONFIG',
+      })
+      expect(readBytes().equals(bytes)).toBe(true)
+    }
+  }
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'adpt-chain-own-'))
+  })
+
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true })
+  })
+
+  // --- 指摘1: managed block 内の notify の所有権 --------------------------
+
+  it('refuses when a well-formed block contains the user own notify', () => {
+    const original = [
+      CODEX_BLOCK_START,
+      'notify = ["C:/tools/other.exe", "turn-ended"]',
+      CODEX_BLOCK_END,
+      '',
+      '[tui]',
+      'theme = "dark"',
+      '',
+    ].join('\n')
+    const before = write(original)
+
+    expect(inspectAgentIntegration(options()).codexDetection).toBe('invalid_config')
+    expectAllModesUnchanged(before)
+    // 利用者の notify も [tui] も残っている
+    const parsed = parseToml(readText()) as Record<string, unknown>
+    expect(parsed.notify).toEqual(['C:/tools/other.exe', 'turn-ended'])
+    expect(parsed.tui).toEqual({ theme: 'dark' })
+  })
+
+  it('refuses when the block notify only looks similar to the tracker handler', () => {
+    const impostors: string[][] = [
+      // cli path が tracker のものでない
+      [NODE_PATH, 'D:/other/tool.js', 'agent-event', '--agent', 'codex', '--input', 'argv'],
+      // subcommand が違う
+      [NODE_PATH, CLI_PATH, 'hook-commit', '--agent', 'codex', '--input', 'argv'],
+      // agent が違う
+      [NODE_PATH, CLI_PATH, 'agent-event', '--agent', 'claude', '--input', 'argv'],
+      // 末尾に想定外の引数
+      [NODE_PATH, CLI_PATH, 'agent-event', '--agent', 'codex', '--input', 'argv', '--evil'],
+    ]
+    for (const argv of impostors) {
+      const before = write(
+        [CODEX_BLOCK_START, `notify = ${JSON.stringify(argv)}`, CODEX_BLOCK_END, ''].join('\n'),
+      )
+      expect(isTrackerNotifyArgv(argv)).toBe(false)
+      expect(inspectAgentIntegration(options()).codexDetection).toBe('invalid_config')
+      expectAllModesUnchanged(before)
+    }
+  })
+
+  it('still recognises the tracker handler after the repository moved', () => {
+    write('model = "x"\n')
+    setupAgents('install', options())
+    // path が変わっても所有は tracker のまま (repair できる)
+    expect(inspectAgentIntegration(options(MOVED_CLI_PATH)).codexDetection).toBe('stale')
+    expect(setupAgents('repair', options(MOVED_CLI_PATH))[0]).toMatchObject({
+      ok: true,
+      state: 'updated',
+    })
+    expect(inspectAgentIntegration(options(MOVED_CLI_PATH)).codexDetection).toBe('ready')
+  })
+
+  it('accepts the tracker handler with a chain argument', () => {
+    expect(
+      isTrackerNotifyArgv([
+        NODE_PATH,
+        'D:\\app\\dist\\cli\\index.js',
+        'agent-event',
+        '--agent',
+        'codex',
+        '--input',
+        'argv',
+        '--chain',
+        '["other.exe"]',
+      ]),
+    ).toBe(true)
+  })
+
+  // --- 指摘2: UTF-8 BOM ---------------------------------------------------
+
+  const BOM = '\ufeff'
+  const bomCases: Array<[string, string]> = [
+    ['BOM only', BOM],
+    ['BOM + top-level value', `${BOM}model = "gpt-5.6-terra"\n`],
+    ['BOM + table', `${BOM}[tui]\ntheme = "dark"\n`],
+    [
+      'BOM + existing notify',
+      `${BOM}notify = ["C:/tools/other.exe", "turn-ended"]\n[tui]\nx = 1\n`,
+    ],
+  ]
+
+  for (const [label, original] of bomCases) {
+    it(`installs and uninstalls byte-for-byte with a ${label}`, () => {
+      const before = write(original)
+
+      const install = setupAgents('install', options())[0]
+      expect(install).toMatchObject({ ok: true })
+      expect(inspectAgentIntegration(options()).codexDetection).toBe('ready')
+
+      // BOM は先頭に保たれ、block はその後の行頭から始まる
+      const installed = readText()
+      expect(installed.startsWith(BOM)).toBe(true)
+      expect(installed.slice(1).startsWith(CODEX_BLOCK_START)).toBe(true)
+      expect(() => parseToml(installed.slice(1))).not.toThrow()
+
+      expect(setupAgents('uninstall', options())[0]).toMatchObject({ ok: true, state: 'removed' })
+      expect(readBytes().equals(before)).toBe(true)
+    })
+  }
+
+  it('splits the BOM from the body', () => {
+    expect(splitBom(`${BOM}model = "x"`)).toEqual({ bom: BOM, body: 'model = "x"' })
+    expect(splitBom('model = "x"')).toEqual({ bom: '', body: 'model = "x"' })
   })
 })
