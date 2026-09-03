@@ -1,14 +1,15 @@
 # DESIGN.md — 設計書
 
 project_id: ai-dev-progress-tracker  
-version: 2.6  
+version: 2.7  
 date: 2026-09-03  
 source: PLAN.md v1.1 + 公開 `ai-dev-progress-tracker` commit `c281f91` / DESIGN.md v1.7 + 2026-09-02実測環境  
 revision 2.2: D006 (Codex notify) を「競合エラー」から「既存notifyを退避してchain」へ変更  
 revision 2.3: D027 追加。chain の退避データ検証・TOML認識の範囲検出・atomic write・byte一致復元を固定  
 revision 2.4: D028 追加。managed block の構造検証・行頭挿入での往復・`--chain`不正の区別・親終了watchdogを固定  
 revision 2.5: D029 追加。block 内 notify の所有権検証・BOM の parse 前除去・watchdog 経路の直接検証を固定  
-revision 2.6: D030 追加。managed block の識別・所有権判定を単一関数の 4 条件へ再設計 (4-2 系を置き換え)
+revision 2.6: D030 追加。managed block の識別・所有権判定を単一関数の 4 条件へ再設計 (4-2 系を置き換え)  
+revision 2.7: D031 追加。block 本文を行単位で検証 (コメント等の構造外データを検出) し、dist entry のテストは毎回 build する
 
 ## 0. 受入検査・実測環境・v1.3〜v1.7互換インベントリ
 
@@ -197,8 +198,12 @@ v2追加:
    1. 開始 / 終了 marker が **行全体** として 1 組だけ存在する (marker 行の前後の空白のみ許可、
       marker の後ろに文字列が付く行は marker と認めない)。marker 文字列が block の外にも
       現れる config も対象外。
-   2. block の中身が「任意の `# previous-notify:` 1 行」+「TOML として `notify` **だけ**を
-      定義する本文」であること。中身は block だけを単独 parse して確認する。
+   2. block の中身が **行単位で** 「`# previous-notify:` 1 行 (任意)」→「`notify` 1 行」の
+      順序どおりで、それ以外の行が 1 行も無いこと。TOML parse だけではコメントが結果から
+      消えて検出できないため、**行の並びで**判定する。空行・コメント (行末コメントを含む)・
+      2 つめの notify があれば tracker の block と認めない。
+      notify 行は tracker が書く正準形 `notify = ["...", ...]` と完全一致することまで確認する
+      (書式違い・行末コメント付きは正準形と一致しないので弾かれる)。
    3. その `notify` argv が tracker の handler 形であること:
       argv[0] の basename が `node` / `node.exe`、argv[1] が絶対 path の `.../cli/index.js`、
       続く 5 要素が `agent-event --agent codex --input argv`、末尾は無しか
@@ -1050,7 +1055,10 @@ npm run eval:ui:record
   親を `SIGKILL` で消し (server へは signal を送らない)、server の終了・port解放・
   DB close (再open と data dir 削除が成功すること) を確認する。
   検証は **src (tsx) と build 済み `dist/server/index.js` の両方**で行う (実運用と E2E は dist を
-  起動するため)。`TRACKER_PARENT_PID` 未指定では終了しないことも同時に固定する。
+  起動するため)。`test:all` は test → build の順で走るため、dist を対象にするテストは
+  **実行前に必ず `npm run build:server` を実行**し、古い artifact を検証しないようにする
+  (mtime による鮮度 assert も併せて行う)。
+  `TRACKER_PARENT_PID` 未指定では終了しないことも同時に固定する。
 
 ### CI
 
@@ -1145,6 +1153,7 @@ agent-eventがserver未起動なら同じbuildの`dist/server/index.js`をdetach
 | D023 | UI performance | harnessとactual記録を別task | 想定expected禁止 | 事前fixture: 却下 |
 | D024 | real external tests | temp local + dedicated Private fixture repo | fake完結防止とuser data保護 | production repo試験: 却下 |
 | D025 | exact OS/browser未計測 | implementationをblockせずT025で識別情報だけ記録 | viewportは取得済み、追加質問不要 | 推測記載: 却下 |
+| D031 | block 本文の行単位検証と dist 鮮度 | (1) block 本文は TOML parse ではなく **行の並び**で検証し、想定外の行 (コメント・空行・行末コメント・2 つめの notify) があれば corrupt。notify 行は正準形と完全一致を要求する。(2) dist entry を検証するテストは毎回 build し、mtime で鮮度も assert する | TOML parse ではコメントが結果から消え、利用者のコメントを「構造外データ」として検出できず uninstall で消していた。また `test:all` は test → build の順なので、古い dist を検証して pass しうる | block 本文を TOML parse だけで検証: 却下。dist の存在確認だけで済ませる: 却下 (2026-09-03 revision 2.7) |
 | D030 | managed block 識別の再設計 | marker 検出・構造検証・所有権判定・top-level 一致確認を `readManagedBlock` 1 関数の 4 条件へ統合し、file 全体の parse 結果を所有権の根拠から外す。marker は行全体一致、argv は node 実行体 + 絶対 `.../cli/index.js` + 固定 subcommand + 末尾 `--chain` のみ、chain 置換は行境界まで広げる | 同一領域で 4 回連続して破壊経路が見つかったため、個別の穴埋めをやめ「どこを見て所有と判断するか」を 1 か所へ集約した。所有権の材料が複数箇所に散っていたことが、top-level notify の取り違え・marker 行末の見落とし・argv 先頭の未検証を同時に生んでいた | 個別条件の追加を続ける: 却下。block へ独自 metadata (checksum 等) を持たせる: 追加状態を増やすため却下 (2026-09-03 revision 2.6) |
 | D029 | block内notifyの所有権とBOM | (1) 構造検証に加え、block内notify argvの形 (cli/index.js + agent-event + --agent codex + --input argv、末尾は `--chain <json>` のみ) で所有権を判定し、tracker以外ならcorruptとして全mode無変更。判定は内容のみでpath非依存。(2) BOMはparse前に切り離し、書き戻し時に復元する。(3) watchdog経路は親をSIGKILLする専用testで直接検証する | 再々レビューで「正しいmarker対の中に利用者のnotifyがあるconfigをstaleと誤認し、uninstallでそのnotifyが消える」「BOM付きconfigがparse前段で INVALID_AGENT_CONFIG になりBOM対応経路へ到達しない」を実再現。marker構造だけでは所有権を保証できないため、tracker自身のhandlerであることまで確認する方針にした | marker構造だけで所有と見なす: 却下。BOMをそのままparserへ渡す: 却下 (2026-09-03 revision 2.5) |
 | D028 | managed block の同定と挿入位置 | (1) blockはmarker対 + 中身の形 (`# previous-notify:` 1行 + `notify` 1行のみ) まで検証し、一致しなければcorruptとして全modeで無変更。(2) notify不在時の挿入はfile先頭固定にして `block + 改行1つ` の往復で byte 一致。(3) `--chain`の「無い」と「不正」を型で区別。(4) E2E serverは signal に加え `TRACKER_PARENT_PID` watchdog で親終了時に自ら終わる | 再レビューで「末尾改行なしconfigへ install すると block が直前行へ連結し復元不能」「利用者コメントがmarkerと一致するとその間の行を削除し重複notifyへ破壊」「不正 `--chain` が corrupt にならず config を書き換える」「sandboxでsignalが届かずE2Eが終了しない」を実再現したため | marker文字列だけで判定: 却下。table header直前へ挿入: 末尾改行なしで往復不能のため却下。signalのみに依存: 環境依存のため却下 (2026-09-03 revision 2.4) |

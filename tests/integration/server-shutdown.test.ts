@@ -1,9 +1,9 @@
 import { type ChildProcess, execFileSync, spawn } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, statSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { openDatabase } from '../../src/server/db/connection.js'
 import { listProjects } from '../../src/server/db/project-repository.js'
 
@@ -17,12 +17,22 @@ const SHUTDOWN_TIMEOUT_MS = 15_000
 const SOURCE_ENTRY = ['--import', 'tsx', resolve('src/server/index.ts')]
 const DIST_ENTRY = [resolve('dist/server/index.js')]
 
-/** dist が無ければ server だけ build する (test:all では build 前に走るため)。 */
-function ensureDistEntry(): void {
-  if (existsSync(resolve('dist/server/index.js'))) {
-    return
+/**
+ * dist entry は **毎回 build し直してから**検証する。
+ * `test:all` は test → build の順なので、古い dist が残っていると
+ * 現在の source ではない artifact を検証してしまう (review 指摘2)。
+ */
+function buildDistEntry(): void {
+  execFileSync('npm', ['run', 'build:server'], { stdio: 'ignore', shell: true, timeout: 300_000 })
+  if (!existsSync(resolve('dist/server/index.js'))) {
+    throw new Error('build:server did not produce dist/server/index.js')
   }
-  execFileSync('npm', ['run', 'build:server'], { stdio: 'ignore', shell: true, timeout: 180_000 })
+}
+
+/** build 済み entry が現在の source より新しいこと (鮮度) を確かめる。 */
+function distIsFresherThanSource(): boolean {
+  const dist = statSync(resolve('dist/server/index.js')).mtimeMs
+  return statSync(resolve('src/server/index.ts')).mtimeMs <= dist
 }
 
 function waitForExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
@@ -72,8 +82,18 @@ describe('server shutdown', () => {
   let parent: ChildProcess | null = null
   let server: ChildProcess | null = null
 
+  beforeAll(() => {
+    // dist entry を検証する前に必ず build し直す。
+    buildDistEntry()
+  }, 300_000)
+
   beforeEach(() => {
     dataDir = mkdtempSync(join(tmpdir(), 'adpt-shutdown-'))
+  })
+
+  it('verifies the built entry against the current source', () => {
+    expect(existsSync(resolve('dist/server/index.js'))).toBe(true)
+    expect(distIsFresherThanSource()).toBe(true)
   })
 
   afterEach(async () => {
@@ -104,14 +124,7 @@ describe('server shutdown', () => {
   // 実運用 (npm start) と E2E は dist を起動するので、両方の entry で同じ経路を確認する。
   const entries: Array<[string, () => readonly string[], number]> = [
     ['source entry (tsx)', () => SOURCE_ENTRY, PORT],
-    [
-      'built entry (dist)',
-      () => {
-        ensureDistEntry()
-        return DIST_ENTRY
-      },
-      PORT + 10,
-    ],
+    ['built entry (dist)', () => DIST_ENTRY, PORT + 10],
   ]
 
   for (const [label, entry, basePort] of entries) {

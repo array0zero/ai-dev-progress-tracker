@@ -178,3 +178,23 @@ dist entry の watchdog・SIGTERM。
 `npm run real:codex-detection` PASS (実 config copy の install→doctor→repair→uninstall が
 byte 一致復元、実 file は未変更)。DESIGN.md は revision 2.6 (D030 追加、4-2 系を再設計後の
 4 条件へ置き換え) へ更新。
+
+## Codex 第5回レビュー指摘への対応 (2026-09-03)
+
+| # | 判定 | 対応 |
+|---:|---|---|
+| 1 | **妥当・修正** | 条件2が block 本文を TOML parse してキーだけを見ていたため、**コメントは parse 結果から消えて構造外データとして検出できず**、uninstall で利用者のコメントが消えていた。検証を **行単位** へ変更 (`readBlockBody`): 本文は「`# previous-notify:` 1 行 (任意)」→「notify 1 行」の順序どおりで、それ以外の行が 1 行でもあれば `corrupt` として全 mode 無変更。notify 行は tracker が書く**正準形** `notify = ["...", ...]` と完全一致することまで要求するので、行末コメントや書式違いも弾かれる。block 本文の TOML 全体 parse は廃止し、notify 行 1 行だけを parse して argv を得る。 |
+| 2 | **妥当・修正** | dist entry のテストが `existsSync` で再 build を省いており、`test:all` (test → build の順) では古い artifact を検証しうる状態だった。`beforeAll` で**毎回 `npm run build:server` を実行**し、さらに `dist/server/index.js` の mtime が `src/server/index.ts` 以降であること (鮮度) を assert するテストを追加した。 |
+
+追加回帰テスト (unit +8 件 / integration +1 件、合計 352 件):
+block 内の通常コメント / notify 行末コメント / marker 文字列を含むコメント / 空行 /
+2 つめの notify / 正準形でない notify 行 / previous-notify が notify の後ろにある並び —
+いずれも 3 mode すべてで無変更かつ利用者のコメントが残ることを byte 比較で確認。
+installer が書いた block そのものは従来どおり `ready` → uninstall で byte 一致復元。
+dist 鮮度 assert (`verifies the built entry against the current source`)。
+
+検証: `npm run test:all` exit 0 (lint / typecheck / unit+integration 352 件 / build / e2e 33 件、
+50 秒、node プロセス数 7→7)、`npm run verify:secrets` hit 0 件、
+`npm run real:codex-detection` PASS (実 config copy の install→doctor→repair→uninstall が
+byte 一致復元、実 file は未変更)。DESIGN.md は revision 2.7 (D031 追加、条件 2 を行単位検証へ
+書き換え、E2E server 終了節へ dist 鮮度の要件を追記) へ更新。

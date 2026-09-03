@@ -1060,3 +1060,118 @@ describe('Codex managed block ownership (fourth review findings 1-3)', () => {
     expect(readBytes().equals(before)).toBe(true)
   })
 })
+
+describe('Codex managed block body (fifth review finding 1)', () => {
+  let home: string
+
+  const options = (cliPath = CLI_PATH) => ({ home, nodePath: NODE_PATH, cliPath })
+  const codexPath = (): string => join(home, '.codex', 'config.toml')
+  const readBytes = (): Buffer => readFileSync(codexPath())
+  const readText = (): string => readFileSync(codexPath(), 'utf8')
+
+  function write(text: string): Buffer {
+    mkdirSync(join(home, '.codex'), { recursive: true })
+    writeFileSync(codexPath(), text, 'utf8')
+    return readFileSync(codexPath())
+  }
+
+  function expectAllModesUnchanged(bytes: Buffer): void {
+    for (const mode of ['install', 'repair', 'uninstall'] as const) {
+      expect(setupAgents(mode, options())[0]).toEqual({
+        agent: 'codex',
+        ok: false,
+        code: 'INVALID_AGENT_CONFIG',
+      })
+      expect(readBytes().equals(bytes)).toBe(true)
+    }
+  }
+
+  /** install 済みの block へ 1 行差し込んだ config を作る。 */
+  function withInjectedLine(inject: (notifyLine: string) => string[]): Buffer {
+    write('model = "x"\n')
+    setupAgents('install', options())
+    const lines = readText().split('\n')
+    const notifyIndex = lines.findIndex((line) => line.startsWith('notify = '))
+    const replacement = inject(lines[notifyIndex] ?? '')
+    lines.splice(notifyIndex, 1, ...replacement)
+    return write(lines.join('\n'))
+  }
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'adpt-body5-'))
+  })
+
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true })
+  })
+
+  it('refuses a block that contains a plain comment line', () => {
+    const before = withInjectedLine((notifyLine) => ['# 利用者のメモ', notifyLine])
+    expect(readText()).toContain('# 利用者のメモ')
+    expect(inspectAgentIntegration(options()).codexDetection).toBe('invalid_config')
+    expectAllModesUnchanged(before)
+    expect(readText()).toContain('# 利用者のメモ')
+  })
+
+  it('refuses a block whose notify line carries an inline comment', () => {
+    const before = withInjectedLine((notifyLine) => [`${notifyLine} # 消してはいけない注記`])
+    expect(inspectAgentIntegration(options()).codexDetection).toBe('invalid_config')
+    expectAllModesUnchanged(before)
+    expect(readText()).toContain('# 消してはいけない注記')
+  })
+
+  it('refuses a block that contains a comment mentioning the marker', () => {
+    const before = withInjectedLine((notifyLine) => [
+      `# ${CODEX_BLOCK_START} についてのメモ`,
+      notifyLine,
+    ])
+    expect(inspectAgentIntegration(options()).codexDetection).toBe('invalid_config')
+    expectAllModesUnchanged(before)
+    expect(readText()).toContain('についてのメモ')
+  })
+
+  it('refuses a block that contains a blank line', () => {
+    const before = withInjectedLine((notifyLine) => ['', notifyLine])
+    expect(inspectAgentIntegration(options()).codexDetection).toBe('invalid_config')
+    expectAllModesUnchanged(before)
+  })
+
+  it('refuses a block that contains a second notify line', () => {
+    const before = withInjectedLine((notifyLine) => [notifyLine, notifyLine])
+    expect(inspectAgentIntegration(options()).codexDetection).toBe('invalid_config')
+    expectAllModesUnchanged(before)
+  })
+
+  it('refuses a block whose notify line is not in the tracker format', () => {
+    // 値としては同じでも書式が違う行は tracker が書いたものではない。
+    const before = withInjectedLine((notifyLine) => {
+      const argv = JSON.parse(notifyLine.replace('notify = ', '')) as string[]
+      return [`notify = [ ${argv.map((value) => JSON.stringify(value)).join(',  ')} ]`]
+    })
+    expect(inspectAgentIntegration(options()).codexDetection).toBe('invalid_config')
+    expectAllModesUnchanged(before)
+  })
+
+  it('refuses a block whose previous-notify comes after the notify line', () => {
+    write('notify = ["C:/tools/other.exe", "turn-ended"]\n')
+    setupAgents('install', options())
+    const lines = readText().split('\n')
+    const previousIndex = lines.findIndex((line) => line.startsWith('# previous-notify: '))
+    const [previousLine] = lines.splice(previousIndex, 1)
+    const notifyIndex = lines.findIndex((line) => line.startsWith('notify = '))
+    lines.splice(notifyIndex + 1, 0, previousLine ?? '')
+    const before = write(lines.join('\n'))
+
+    expect(inspectAgentIntegration(options()).codexDetection).toBe('invalid_config')
+    expectAllModesUnchanged(before)
+  })
+
+  it('keeps accepting the exact block the installer writes', () => {
+    write('# user\nnotify = ["C:/tools/other.exe", "turn-ended"]\n\n[tui]\nx = 1\n')
+    const before = readBytes()
+    expect(setupAgents('install', options())[0]).toMatchObject({ ok: true, state: 'chained' })
+    expect(inspectAgentIntegration(options()).codexDetection).toBe('ready')
+    expect(setupAgents('uninstall', options())[0]).toMatchObject({ ok: true, state: 'removed' })
+    expect(readBytes().equals(before)).toBe(true)
+  })
+})

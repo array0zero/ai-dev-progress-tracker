@@ -475,6 +475,111 @@ function lineRangeToOffsets(lines: readonly string[], from: number, to: number):
   return { start, end }
 }
 
+function encodePrevious(raw: string): string {
+  return Buffer.from(raw, 'utf8').toString('base64')
+}
+
+export interface PreviousNotify {
+  ok: boolean
+  raw: string | null
+  reason?: string
+}
+
+/**
+ * 退避行を復号し、base64 の往復一致と TOML としての妥当性まで検証する。
+ * 壊れていれば ok=false を返し、呼び出し側は破壊的操作を行わない。
+ */
+export function decodePreviousNotify(blockText: string): PreviousNotify {
+  const line = blockText
+    .split('\n')
+    .map((value) => value.replace(/\r$/, ''))
+    .find((value) => value.startsWith(PREVIOUS_NOTIFY_PREFIX))
+  if (line === undefined) {
+    return { ok: true, raw: null }
+  }
+  const encoded = line.slice(PREVIOUS_NOTIFY_PREFIX.length).trim()
+  if (encoded === '') {
+    return { ok: false, raw: null, reason: 'previous-notify is empty' }
+  }
+  const decoded = Buffer.from(encoded, 'base64')
+  // Buffer.from は不正 base64 を黙って捨てるので、往復一致で検出する。
+  if (decoded.toString('base64') !== encoded) {
+    return { ok: false, raw: null, reason: 'previous-notify is not valid base64' }
+  }
+  const raw = decoded.toString('utf8')
+  try {
+    const reparsed = parseToml(raw) as Record<string, unknown>
+    if (asStringArray(reparsed.notify) === null) {
+      return { ok: false, raw: null, reason: 'previous-notify is not a notify string array' }
+    }
+  } catch {
+    return { ok: false, raw: null, reason: 'previous-notify does not parse as TOML' }
+  }
+  return { ok: true, raw }
+}
+
+/** tracker が書く notify 行の正準形。この形と 1 文字でも違えば tracker の行ではない。 */
+function renderNotifyLine(argv: readonly string[]): string {
+  return `notify = [${argv.map((value) => JSON.stringify(value)).join(', ')}]`
+}
+
+interface BlockBody {
+  previousEncoded: string | null
+  notifyArgv: string[]
+}
+
+/**
+ * block 本文を **行単位** で検証する。TOML parse だけではコメントが結果から消え、
+ * 利用者のコメントを構造外データとして検出できないため (review 指摘)。
+ * 許すのは「`# previous-notify:` 1 行 (任意)」→「notify 1 行」の順だけで、
+ * 空行・コメント・その他の行が 1 行でもあれば tracker の block と認めない。
+ */
+function readBlockBody(
+  body: readonly string[],
+): { ok: true; value: BlockBody } | { ok: false; reason: string } {
+  let index = 0
+  let previousEncoded: string | null = null
+
+  const first = body[index]
+  if (first?.startsWith(PREVIOUS_NOTIFY_PREFIX) === true) {
+    previousEncoded = first.slice(PREVIOUS_NOTIFY_PREFIX.length)
+    index += 1
+  }
+
+  const notifyLine = body[index]
+  if (notifyLine === undefined) {
+    return { ok: false, reason: 'the managed block has no notify line' }
+  }
+  index += 1
+  if (index !== body.length) {
+    // コメント・空行・2 つめの notify など、tracker が書かない行がある。
+    return { ok: false, reason: 'the managed block body has an unexpected line' }
+  }
+
+  let parsedLine: Record<string, unknown>
+  try {
+    parsedLine = parseToml(notifyLine) as Record<string, unknown>
+  } catch {
+    return { ok: false, reason: 'the managed block notify line is not valid TOML' }
+  }
+  const keys = Object.keys(parsedLine)
+  if (keys.length !== 1 || keys[0] !== 'notify') {
+    return { ok: false, reason: 'the managed block body defines something other than notify' }
+  }
+  const notifyArgv = asStringArray(parsedLine.notify)
+  if (notifyArgv === null) {
+    return { ok: false, reason: 'the managed block notify is not a string array' }
+  }
+  // 行末コメントや別の書式は正準形と一致しないので弾かれる。
+  if (notifyLine !== renderNotifyLine(notifyArgv)) {
+    return { ok: false, reason: 'the managed block notify line is not in the tracker format' }
+  }
+  if (!isTrackerNotifyArgv(notifyArgv)) {
+    return { ok: false, reason: 'the notify inside the managed block is not the tracker handler' }
+  }
+  return { ok: true, value: { previousEncoded, notifyArgv } }
+}
+
 /** managed block を 1 か所で識別し、所有権まで判定する。 */
 export function readManagedBlock(text: string, topLevelNotify: unknown): ManagedBlockResult {
   const { starts, ends, lines } = findMarkerLines(text)
@@ -501,35 +606,16 @@ export function readManagedBlock(text: string, topLevelNotify: unknown): Managed
     return { kind: 'invalid', reason: 'a marker string appears outside the managed block' }
   }
 
-  const body = blockLines.slice(1, -1).map((line) => line.replace(/\r$/, ''))
-  const previousLines = body.filter((line) => line.startsWith(PREVIOUS_NOTIFY_PREFIX))
-  if (previousLines.length > 1) {
-    return { kind: 'invalid', reason: 'the managed block has more than one previous-notify' }
+  // 条件 2: 本文は「previous-notify 1 行 (任意) + notify 1 行」だけ。行単位で検証する。
+  const body = readBlockBody(blockLines.slice(1, -1).map((line) => line.replace(/\r$/, '')))
+  if (!body.ok) {
+    return { kind: 'invalid', reason: body.reason }
   }
-  const tomlBody = body.filter((line) => !line.startsWith(PREVIOUS_NOTIFY_PREFIX)).join('\n')
-
-  // block の中身だけを TOML として読む。file 全体の値は使わない。
-  let blockParsed: Record<string, unknown>
-  try {
-    blockParsed = parseToml(tomlBody) as Record<string, unknown>
-  } catch {
-    return { kind: 'invalid', reason: 'the managed block body is not valid TOML' }
-  }
-  const keys = Object.keys(blockParsed)
-  if (keys.length !== 1 || keys[0] !== 'notify') {
-    return { kind: 'invalid', reason: 'the managed block body defines something other than notify' }
-  }
-  const notifyArgv = asStringArray(blockParsed.notify)
-  if (!isTrackerNotifyArgv(notifyArgv) || notifyArgv === null) {
-    return {
-      kind: 'invalid',
-      reason: 'the notify inside the managed block is not the tracker handler',
-    }
-  }
+  const { notifyArgv } = body.value
 
   const range = lineRangeToOffsets(lines, start, end)
 
-  // file の top-level notify assignment が block の中にあること。
+  // 条件 4: file の top-level notify assignment が block の中にあり、値も一致すること。
   // (block が table の中にある / 別の top-level notify がある構成を弾く)
   const topLevelRange = findTopLevelNotifyRange(text, topLevelNotify)
   if (
@@ -574,49 +660,6 @@ export function readManagedBlock(text: string, topLevelNotify: unknown): Managed
     kind: 'owned',
     view: { range, notifyArgv, notifyRange: topLevelRange, previousRaw: previous.raw, chainArgv },
   }
-}
-
-function encodePrevious(raw: string): string {
-  return Buffer.from(raw, 'utf8').toString('base64')
-}
-
-export interface PreviousNotify {
-  ok: boolean
-  raw: string | null
-  reason?: string
-}
-
-/**
- * 退避行を復号し、base64 の往復一致と TOML としての妥当性まで検証する。
- * 壊れていれば ok=false を返し、呼び出し側は破壊的操作を行わない。
- */
-export function decodePreviousNotify(blockText: string): PreviousNotify {
-  const line = blockText
-    .split('\n')
-    .map((value) => value.replace(/\r$/, ''))
-    .find((value) => value.startsWith(PREVIOUS_NOTIFY_PREFIX))
-  if (line === undefined) {
-    return { ok: true, raw: null }
-  }
-  const encoded = line.slice(PREVIOUS_NOTIFY_PREFIX.length).trim()
-  if (encoded === '') {
-    return { ok: false, raw: null, reason: 'previous-notify is empty' }
-  }
-  const decoded = Buffer.from(encoded, 'base64')
-  // Buffer.from は不正 base64 を黙って捨てるので、往復一致で検出する。
-  if (decoded.toString('base64') !== encoded) {
-    return { ok: false, raw: null, reason: 'previous-notify is not valid base64' }
-  }
-  const raw = decoded.toString('utf8')
-  try {
-    const reparsed = parseToml(raw) as Record<string, unknown>
-    if (asStringArray(reparsed.notify) === null) {
-      return { ok: false, raw: null, reason: 'previous-notify is not a notify string array' }
-    }
-  } catch {
-    return { ok: false, raw: null, reason: 'previous-notify does not parse as TOML' }
-  }
-  return { ok: true, raw }
 }
 
 export function inspectCodexConfig(raw: string, expectedArgv: readonly string[]): CodexInspection {
