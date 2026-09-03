@@ -3,6 +3,9 @@ import { checkVersion, loadConfig, VERSION_REQUIREMENTS } from './config.js'
 import { openDatabase } from './db/connection.js'
 import { createLogger } from './logging.js'
 
+/** 親プロセス生存確認の間隔。 */
+const PARENT_WATCHDOG_INTERVAL_MS = 1_000
+
 async function main(): Promise<void> {
   const config = loadConfig()
   const logger = createLogger(config.logFilePath)
@@ -47,6 +50,24 @@ async function main(): Promise<void> {
   }
   for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
     process.on(signal, () => shutdown(signal))
+  }
+
+  // signal が届かない環境 (sandbox / Windows の process tree kill 失敗) でも
+  // 親が消えたら確実に終わるための watchdog。TRACKER_PARENT_PID がある時だけ動く。
+  const parentPid = Number(process.env.TRACKER_PARENT_PID)
+  if (Number.isInteger(parentPid) && parentPid > 0) {
+    const timer = setInterval(() => {
+      try {
+        // signal 0 は送信せず存在確認だけ行う。EPERM は「居るが権限なし」なので生存扱い。
+        process.kill(parentPid, 0)
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ESRCH') {
+          clearInterval(timer)
+          shutdown('SIGTERM')
+        }
+      }
+    }, PARENT_WATCHDOG_INTERVAL_MS)
+    timer.unref()
   }
 }
 

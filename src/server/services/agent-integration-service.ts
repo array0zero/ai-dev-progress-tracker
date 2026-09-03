@@ -264,7 +264,7 @@ export interface TextRange {
  * 求めた範囲を単独で parse し直し、値が一致しない場合は null を返す (誤検出を残さない)。
  */
 export function findTopLevelNotifyRange(text: string, expectedValue: unknown): TextRange | null {
-  const managed = findManagedBlockRange(text)
+  const managed = findManagedBlock(text)?.range ?? null
   let i = 0
   let topLevel = true
 
@@ -322,14 +322,99 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
-/** managed block の raw 範囲 (末尾 marker 行の終わりまで、改行は含まない)。 */
-export function findManagedBlockRange(text: string): TextRange | null {
+export type ChainRead = { kind: 'none' } | { kind: 'ok'; argv: string[] } | { kind: 'invalid' }
+
+/** managed argv の `--chain <json>`。「無い」と「壊れている」を区別する (review 指摘3)。 */
+function readChainArgv(argv: readonly string[]): ChainRead {
+  const index = argv.indexOf('--chain')
+  if (index === -1) {
+    return { kind: 'none' }
+  }
+  const raw = argv[index + 1]
+  if (raw === undefined) {
+    return { kind: 'invalid' }
+  }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return { kind: 'invalid' }
+  }
+  const argvValue = asStringArray(parsed)
+  return argvValue === null ? { kind: 'invalid' } : { kind: 'ok', argv: argvValue }
+}
+
+export interface ManagedBlock {
+  range: TextRange
+  /** marker 対で囲まれた中身が tracker block の形をしているか (review 指摘2)。 */
+  valid: boolean
+  previousEncoded: string | null
+  notifyLine: string | null
+}
+
+/**
+ * marker 対で囲まれた範囲を返す。marker 文字列の存在だけでは managed と認めず、
+ * 中身が「任意の `# previous-notify:` 1 行 + `notify = [...]` 1 行」だけであることまで見る。
+ */
+export function findManagedBlock(text: string): ManagedBlock | null {
   const pattern = new RegExp(
     `^[ \\t]*${escapeRegExp(CODEX_BLOCK_START)}[\\s\\S]*?^[ \\t]*${escapeRegExp(CODEX_BLOCK_END)}`,
     'm',
   )
   const match = pattern.exec(text)
-  return match === null ? null : { start: match.index, end: match.index + match[0].length }
+  if (match === null) {
+    return null
+  }
+  const range = { start: match.index, end: match.index + match[0].length }
+  const lines = match[0].split('\n').map((line) => line.replace(/\r$/, ''))
+  const body = lines.slice(1, -1)
+
+  let previousEncoded: string | null = null
+  let notifyLine: string | null = null
+  let valid = true
+  for (const line of body) {
+    if (line.trim() === '') {
+      continue
+    }
+    if (line.startsWith(PREVIOUS_NOTIFY_PREFIX)) {
+      if (previousEncoded !== null) {
+        valid = false
+        break
+      }
+      previousEncoded = line.slice(PREVIOUS_NOTIFY_PREFIX.length).trim()
+      continue
+    }
+    if (/^notify\s*=\s*\[/.test(line)) {
+      if (notifyLine !== null) {
+        valid = false
+        break
+      }
+      notifyLine = line
+      continue
+    }
+    // tracker が書いた覚えのない行がある = 利用者のデータ。触らない。
+    valid = false
+    break
+  }
+  if (notifyLine === null) {
+    valid = false
+  }
+  return { range, valid, previousEncoded, notifyLine }
+}
+
+/** marker が片方だけ / 壊れた形で存在するか。存在するなら書き込みを止める。 */
+function hasStrayMarker(text: string, block: ManagedBlock | null): boolean {
+  const hasStart = text.includes(CODEX_BLOCK_START)
+  const hasEnd = text.includes(CODEX_BLOCK_END)
+  if (!hasStart && !hasEnd) {
+    return false
+  }
+  if (block === null || !block.valid) {
+    return true
+  }
+  // marker が block の外にもある場合 (利用者のコメント等) は判別できない。
+  const outside = text.slice(0, block.range.start) + text.slice(block.range.end)
+  return outside.includes(CODEX_BLOCK_START) || outside.includes(CODEX_BLOCK_END)
 }
 
 function encodePrevious(raw: string): string {
@@ -383,12 +468,23 @@ export function inspectCodexConfig(text: string, expectedArgv: readonly string[]
     return { state: 'invalid', chainArgv: null, previousRaw: null }
   }
   const notify = parsed.notify
-  const managed = findManagedBlockRange(text)
+  const block = findManagedBlock(text)
 
-  if (notify === undefined) {
-    return { state: 'absent', chainArgv: null, previousRaw: null }
+  // marker が壊れた形で存在する / block の外にもある場合は、どこまでが tracker の
+  // 書いた範囲か判別できない。利用者データを消さないため書き込みを止める (review 指摘2)。
+  if (hasStrayMarker(text, block)) {
+    return {
+      state: 'corrupt',
+      chainArgv: null,
+      previousRaw: null,
+      reason: 'the managed block markers are not in the expected shape',
+    }
   }
-  if (managed === null) {
+
+  if (block === null) {
+    if (notify === undefined) {
+      return { state: 'absent', chainArgv: null, previousRaw: null }
+    }
     // 既存 notify は削除せず chain する (DESIGN v2.2 D006)。
     const argv = asStringArray(notify)
     if (argv === null) {
@@ -406,9 +502,28 @@ export function inspectCodexConfig(text: string, expectedArgv: readonly string[]
     return { state: 'chainable', chainArgv: argv, previousRaw: null }
   }
 
-  const blockText = text.slice(managed.start, managed.end)
-  const previous = decodePreviousNotify(blockText)
-  const chainArgv = readChainArgv(asStringArray(notify) ?? [])
+  if (notify === undefined) {
+    // block はあるのに top-level notify が読めない = 構造が想定外。
+    return {
+      state: 'corrupt',
+      chainArgv: null,
+      previousRaw: null,
+      reason: 'the managed block does not provide a top-level notify',
+    }
+  }
+
+  const previous = decodePreviousNotify(text.slice(block.range.start, block.range.end))
+  const chain = readChainArgv(asStringArray(notify) ?? [])
+  if (chain.kind === 'invalid') {
+    // 「--chain が無い」と「--chain が壊れている」を区別する (review 指摘3)。
+    return {
+      state: 'corrupt',
+      chainArgv: null,
+      previousRaw: null,
+      reason: 'the chained argv is not valid JSON',
+    }
+  }
+  const chainArgv = chain.kind === 'ok' ? chain.argv : null
   if (!previous.ok) {
     return { state: 'corrupt', chainArgv, previousRaw: null, reason: previous.reason }
   }
@@ -446,19 +561,6 @@ export function inspectCodexConfig(text: string, expectedArgv: readonly string[]
   }
 }
 
-/** managed argv から `--chain <json>` を取り出す。 */
-function readChainArgv(argv: readonly string[]): string[] | null {
-  const index = argv.indexOf('--chain')
-  if (index === -1) {
-    return null
-  }
-  try {
-    return asStringArray(JSON.parse(argv[index + 1] ?? ''))
-  } catch {
-    return null
-  }
-}
-
 export function withChain(argv: readonly string[], chainArgv: readonly string[] | null): string[] {
   return chainArgv === null || chainArgv.length === 0
     ? [...argv]
@@ -479,10 +581,12 @@ function managedCodexBlock(
   return lines.join(eol)
 }
 
-/** managed block を差し込む位置。最初の table header の直前 (= top-level)。 */
+/** managed block を差し込む位置。 */
 function insertOffsetForBlock(text: string): number {
-  const header = /^[ \t]*\[/m.exec(text)
-  return header === null ? text.length : header.index
+  // 常に file 先頭 (BOM があればその直後)。行頭が保証されるので
+  // `block + 1 改行` の挿入と除去が byte 一致で往復する (review 指摘1)。
+  // top-level なので「最初の table header より前」も自動的に満たす。
+  return text.startsWith('﻿') ? 1 : 0
 }
 
 export function applyCodexNotify(
@@ -508,7 +612,7 @@ export function applyCodexNotify(
       : { agent: 'codex', ok: false, code: 'CODEX_NOTIFY_CONFLICT' }
   }
 
-  const managed = findManagedBlockRange(text)
+  const managed = findManagedBlock(text)?.range ?? null
 
   if (mode === 'uninstall') {
     if (inspection.state === 'absent' || inspection.state === 'chainable' || managed === null) {
@@ -557,7 +661,9 @@ export function applyCodexNotify(
     return { agent: 'codex', ok: true, state: 'updated' }
   }
 
-  // absent: 最初の table header の前へ block を挿入する。
+  // absent: top-level の先頭 (= 最初の table header より前) へ block + 改行を挿入する。
+  // 常に行頭へ入れて `block + 1 改行` だけを足すので、末尾改行の有無に関わらず
+  // uninstall が同じ範囲を取り除いて byte 一致で戻せる (review 指摘1)。
   const offset = insertOffsetForBlock(text)
   const block = managedCodexBlock(base, null, eol)
   const next = `${text.slice(0, offset)}${block}${eol}${text.slice(offset)}`

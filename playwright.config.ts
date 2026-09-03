@@ -44,13 +44,16 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: 'npm start',
+    // npm shim を挟まず node を直接起動する (shim が signal を飲む環境でも確実に終わる)。
+    command: 'node dist/server/index.js',
     url: 'http://127.0.0.1:4317/api/health',
     reuseExistingServer: false,
     timeout: 120_000,
     env: {
       ...stringEnv(process.env),
       TRACKER_DATA_DIR: process.env.E2E_TRACKER_DATA_DIR ?? '',
+      // signal が届かない環境でも runner の終了で server が確実に終わる。
+      TRACKER_PARENT_PID: String(process.pid),
       TRACKER_PORT: '4317',
       TRACKER_GH_BIN: process.env.E2E_GH_BIN ?? '',
       TRACKER_GH_ARGS: process.env.E2E_GH_ARGS ?? '',

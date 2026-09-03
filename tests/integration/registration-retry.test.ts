@@ -19,6 +19,9 @@ import { createFakeGh, type FakeGh } from '../helpers/fake-gh.js'
 import { createTempDir, type TempDir } from '../helpers/temp-repo.js'
 import { createTestDb, type TestDb } from '../helpers/test-db.js'
 
+// fake gh の read retry (1 秒) を複数回通るため、既定の 5 秒では並列実行時に不足する。
+vi.setConfig({ testTimeout: 30_000 })
+
 describe('registration retry', () => {
   let ctx: TestDb
   let fake: FakeGh

@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { parse as parseToml } from 'smol-toml'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   CODEX_BLOCK_END,
@@ -576,5 +577,168 @@ describe('Codex notify chain hardening (review findings 1-4)', () => {
     expect(readCodex()).toContain(MOVED_CLI_PATH)
     setupAgents('uninstall', options(MOVED_CLI_PATH))
     expect(readCodexBytes().equals(originalBytes)).toBe(true)
+  })
+})
+
+describe('Codex notify chain hardening (re-review findings 1-3)', () => {
+  let home: string
+
+  const options = (cliPath = CLI_PATH) => ({ home, nodePath: NODE_PATH, cliPath })
+  const codexPath = (): string => join(home, '.codex', 'config.toml')
+  const readBytes = (): Buffer => readFileSync(codexPath())
+  const readText = (): string => readFileSync(codexPath(), 'utf8')
+
+  function write(text: string): Buffer {
+    mkdirSync(join(home, '.codex'), { recursive: true })
+    writeFileSync(codexPath(), text, 'utf8')
+    return readFileSync(codexPath())
+  }
+
+  function expectAllModesUnchanged(bytes: Buffer): void {
+    for (const mode of ['install', 'repair', 'uninstall'] as const) {
+      expect(setupAgents(mode, options())[0]).toEqual({
+        agent: 'codex',
+        ok: false,
+        code: 'INVALID_AGENT_CONFIG',
+      })
+      expect(readBytes().equals(bytes)).toBe(true)
+    }
+  }
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'adpt-chain-rr-'))
+  })
+
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true })
+  })
+
+  // --- 再指摘1: 末尾改行なし / table なし ---------------------------------
+
+  const noTrailingNewline: Array<[string, string]> = [
+    ['top-level key only, no trailing newline', 'model = "gpt-5.6-terra"'],
+    ['comment only, no trailing newline', '# just a comment'],
+    ['empty file', ''],
+    ['blank line only', '\n'],
+    ['key + table, no trailing newline', 'model = "x"\n[tui]\ntheme = "dark"'],
+  ]
+
+  for (const [label, original] of noTrailingNewline) {
+    it(`installs and uninstalls byte-for-byte when the config is ${label}`, () => {
+      const before = write(original)
+
+      const install = setupAgents('install', options())[0]
+      expect(install).toMatchObject({ ok: true, state: 'installed' })
+
+      // install 後は managed として認識され、doctor は ready
+      expect(inspectAgentIntegration(options())).toMatchObject({ codexDetection: 'ready' })
+      // block は行頭から始まり、直前の値と連結しない
+      expect(readText()).toContain(`${CODEX_BLOCK_START}\n`)
+      expect(readText()).not.toMatch(/[^\n]# >>> ai-dev-progress-tracker/)
+
+      const uninstall = setupAgents('uninstall', options())[0]
+      expect(uninstall).toMatchObject({ ok: true, state: 'removed' })
+      expect(readBytes().equals(before)).toBe(true)
+    })
+  }
+
+  it('keeps the config parseable and top-level after installing into a file with tables', () => {
+    write('model = "x"\n[tui]\ntheme = "dark"')
+    setupAgents('install', options())
+    const parsed = parseToml(readText()) as Record<string, unknown>
+    expect(Array.isArray(parsed.notify)).toBe(true)
+    expect(parsed.model).toBe('x')
+    expect(parsed.tui).toEqual({ theme: 'dark' })
+  })
+
+  // --- 再指摘2: marker 文字列の偶然一致 -----------------------------------
+
+  it('refuses to touch a config whose own comments contain the markers', () => {
+    const original = [
+      CODEX_BLOCK_START,
+      '# 利用者が書いたメモ。tracker の block ではない。',
+      'model = "gpt-5.6-terra"',
+      CODEX_BLOCK_END,
+      'notify = ["C:/tools/other.exe", "turn-ended"]',
+      '',
+      '[tui]',
+      'theme = "dark"',
+      '',
+    ].join('\n')
+    const before = write(original)
+
+    expect(inspectAgentIntegration(options()).codexDetection).toBe('invalid_config')
+    expectAllModesUnchanged(before)
+  })
+
+  it('refuses when a stray start marker exists outside a valid block', () => {
+    const original = [
+      `${CODEX_BLOCK_START} (メモ)`,
+      'notify = ["C:/tools/other.exe", "turn-ended"]',
+      '',
+    ].join('\n')
+    const before = write(original)
+
+    expect(inspectAgentIntegration(options()).codexDetection).toBe('invalid_config')
+    expectAllModesUnchanged(before)
+  })
+
+  it('refuses when the managed block carries extra user lines', () => {
+    write('notify = ["C:/tools/other.exe", "turn-ended"]\n')
+    setupAgents('install', options())
+    const tampered = readText().replace(
+      `${CODEX_BLOCK_END}`,
+      `model = "sneaked-in"\n${CODEX_BLOCK_END}`,
+    )
+    const before = write(tampered)
+
+    expect(inspectAgentIntegration(options()).codexDetection).toBe('invalid_config')
+    expectAllModesUnchanged(before)
+  })
+
+  // --- 再指摘3: --chain なし vs 不正 --------------------------------------
+
+  it('treats an invalid --chain payload as corrupt in every mode', () => {
+    write('notify = ["C:/tools/other.exe", "turn-ended"]\n')
+    setupAgents('install', options())
+    // 退避行を消し、--chain を壊れた JSON にする
+    const tampered = readText()
+      .split('\n')
+      .filter((line) => !line.startsWith('# previous-notify: '))
+      .join('\n')
+      .replace(/"--chain", "[^"]*"/, '"--chain", "{not json"')
+    const before = write(tampered)
+
+    expect(inspectAgentIntegration(options()).codexDetection).toBe('invalid_config')
+    expectAllModesUnchanged(before)
+  })
+
+  it('treats a --chain flag with no value as corrupt', () => {
+    write('notify = ["C:/tools/other.exe", "turn-ended"]\n')
+    setupAgents('install', options())
+    // argv の末尾を `--chain` だけにする (値なし)
+    const tampered = readText()
+      .split('\n')
+      .map((line) => {
+        if (!line.startsWith('notify = ')) {
+          return line
+        }
+        const argv = JSON.parse(line.replace('notify = ', '')) as string[]
+        return `notify = ${JSON.stringify([...argv.slice(0, argv.indexOf('--chain')), '--chain'])}`
+      })
+      .join('\n')
+    const before = write(tampered)
+
+    expect(inspectAgentIntegration(options()).codexDetection).toBe('invalid_config')
+    expectAllModesUnchanged(before)
+  })
+
+  it('still treats a block with no --chain and no previous-notify as managed', () => {
+    write('model = "x"\n')
+    setupAgents('install', options())
+    expect(readText()).not.toContain('--chain')
+    expect(readText()).not.toContain('previous-notify')
+    expect(inspectAgentIntegration(options()).codexDetection).toBe('ready')
+    expect(setupAgents('install', options())[0]).toMatchObject({ ok: true, state: 'unchanged' })
   })
 })

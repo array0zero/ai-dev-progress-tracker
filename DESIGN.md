@@ -1,11 +1,12 @@
 # DESIGN.md — 設計書
 
 project_id: ai-dev-progress-tracker  
-version: 2.3  
+version: 2.4  
 date: 2026-09-03  
 source: PLAN.md v1.1 + 公開 `ai-dev-progress-tracker` commit `c281f91` / DESIGN.md v1.7 + 2026-09-02実測環境  
 revision 2.2: D006 (Codex notify) を「競合エラー」から「既存notifyを退避してchain」へ変更  
-revision 2.3: D027 追加。chain の退避データ検証・TOML認識の範囲検出・atomic write・byte一致復元を固定
+revision 2.3: D027 追加。chain の退避データ検証・TOML認識の範囲検出・atomic write・byte一致復元を固定  
+revision 2.4: D028 追加。managed block の構造検証・行頭挿入での往復・`--chain`不正の区別・親終了watchdogを固定
 
 ## 0. 受入検査・実測環境・v1.3〜v1.7互換インベントリ
 
@@ -173,7 +174,10 @@ v2追加:
 対象: `~/.codex/config.toml` のtop-level `notify`。Codexは`notify`を1件しか持てないため、既存値は削除せずchainする。
 
 1. `smol-toml`で既存TOMLをparseし、文法が壊れていれば無変更で`INVALID_AGENT_CONFIG`。
-2. `notify`未設定なら、最初のtable headerより前へmanaged blockを挿入する。既存文字列・コメント・table順は変更しない。
+2. `notify`未設定なら、**fileの先頭 (BOMがあればその直後)** へ `managed block + 改行1つ` を挿入する。
+   常に行頭へ入るため末尾改行の有無に依存せず、uninstallは同じ範囲を取り除くだけで
+   **元bytesへ完全一致で戻る**。既存文字列・コメント・table順は変更しない
+   (top-levelなので「最初のtable headerより前」も満たす)。
 3. tracker managed blockが存在しargvが一致すればno-op。
 4. 別の`notify`が**string配列**として存在する場合は **chain** する。
    - 既存`notify` assignment の**raw bytes**をbase64化して managed block内の `# previous-notify:` 行へ退避する。
@@ -187,6 +191,13 @@ v2追加:
    `notify`がstring配列であること、`--chain`のargvと一致することをすべて満たさない場合は
    `INVALID_AGENT_CONFIG`とし、install / repair / uninstall のいずれも**書き込みを行わない**。
    doctorもこの状態を`ready`にしない。
+4-2-1. `--chain`は「無い」と「壊れている」を区別する。値が無い / JSONとして不正 /
+   string配列でない場合はcorruptとして全modeで無変更。「`--chain`が無く退避も無い」だけが
+   正常なchainなし状態。
+4-2-2. managed blockはmarker文字列の存在だけで認定しない。開始・終了markerの対応に加え、
+   中身が「任意の`# previous-notify:` 1行 + `notify = [...]` 1行」だけであることを検証する。
+   markerが片方だけ、blockの外にも出現、block内に他の行がある場合はcorruptとし、
+   利用者データを消さないため全modeで無変更にする。
 4-3. `config.toml`への書き込みは temp file への完全書込み → 読み直し検証 → atomic rename で行う。
    途中で失敗しても元 file と退避データを同時に失わない。temp file は必ず後始末する。
 5. managed blockにはsetup時点の `process.execPath` と `<repo>/dist/cli/index.js` の**絶対パス**を入れる。
@@ -1010,6 +1021,13 @@ npm run eval:ui
 npm run eval:ui:record
 ```
 
+### E2E server の終了
+
+- Playwright の `webServer` は npm shim を挟まず `node dist/server/index.js` を直接起動する。
+- server は `SIGINT` / `SIGTERM` / `SIGHUP` で listen socket と SQLite handle を閉じて終了する。
+- signalが届かない環境でも終わるよう、`TRACKER_PARENT_PID` が指す親プロセスの消滅を
+  1秒間隔で監視し、消えていれば同じ経路で終了する (指定が無ければ監視しない)。
+
 ### CI
 
 Node `24.15.0`で:
@@ -1103,6 +1121,7 @@ agent-eventがserver未起動なら同じbuildの`dist/server/index.js`をdetach
 | D023 | UI performance | harnessとactual記録を別task | 想定expected禁止 | 事前fixture: 却下 |
 | D024 | real external tests | temp local + dedicated Private fixture repo | fake完結防止とuser data保護 | production repo試験: 却下 |
 | D025 | exact OS/browser未計測 | implementationをblockせずT025で識別情報だけ記録 | viewportは取得済み、追加質問不要 | 推測記載: 却下 |
+| D028 | managed block の同定と挿入位置 | (1) blockはmarker対 + 中身の形 (`# previous-notify:` 1行 + `notify` 1行のみ) まで検証し、一致しなければcorruptとして全modeで無変更。(2) notify不在時の挿入はfile先頭固定にして `block + 改行1つ` の往復で byte 一致。(3) `--chain`の「無い」と「不正」を型で区別。(4) E2E serverは signal に加え `TRACKER_PARENT_PID` watchdog で親終了時に自ら終わる | 再レビューで「末尾改行なしconfigへ install すると block が直前行へ連結し復元不能」「利用者コメントがmarkerと一致するとその間の行を削除し重複notifyへ破壊」「不正 `--chain` が corrupt にならず config を書き換える」「sandboxでsignalが届かずE2Eが終了しない」を実再現したため | marker文字列だけで判定: 却下。table header直前へ挿入: 末尾改行なしで往復不能のため却下。signalのみに依存: 環境依存のため却下 (2026-09-03 revision 2.4) |
 | D027 | Codex config 書換えの安全性 | (1) 退避base64は往復一致・TOML parse・`--chain`一致まで検証し、不一致なら破壊的操作を行わず`INVALID_AGENT_CONFIG`。(2) notify範囲検出は文字列/commentを認識し、求めた範囲の再parseで自己検証。(3) 書込みは temp file → 検証 → atomic rename。(4) 復元は全体byte一致でテストする | レビューで「破損base64をdoctorがready判定し、uninstallが既存notifyを消す」「argv内の`[`で範囲がずれ`[tui]`以下が消える」「非atomic書込みで元configと退避を同時に失う」「byte-for-byteテストが実際は部分一致だった」を再現。いずれもuser configの破壊につながるため、検出できない限り書かない方針へ統一した | 行分割ベースの範囲検出を維持: 却下。base64を無検証で使う: 却下 (2026-09-03 revision 2.3) |
 | D026 | v1.7 recovery互換 | `c281f91`のprompt固定契約、`needs_input`正規化、不正decision item除去、default recovery fixtureのstatus/evidence中心評価をv2互換契約へ追加 | schema自体は不変でも生成受理・品質評価の意味が変わっており、これを落とすと薄いevidenceでsnapshotが消える不具合や自然言語表現揺れによる誤failへ回帰する | schemaだけを互換対象にする: 却下 |
 

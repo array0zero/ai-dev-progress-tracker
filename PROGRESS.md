@@ -90,3 +90,27 @@ T002 の byte 一致 golden テストでも継続確認)。
 検証: `npm run test:all` (lint / typecheck / unit+integration 309 件 / build / e2e 33 件)、
 `npm run verify:secrets` (hit 0 / forbiddenDependencies 0)、`npm run real:codex-detection` PASS、
 `node dist/cli/index.js doctor` exit 0。DESIGN.md は revision 2.3 (D027 追加) へ更新。
+
+## Codex 再レビュー指摘への対応 (2026-09-03)
+
+| # | 判定 | 対応 |
+|---:|---|---|
+| 1 | **妥当・修正** | notify も table も無く**末尾改行が無い** config で、挿入位置が `text.length` になり block が直前の値へ連結していた (`model = "x"# >>> ...`)。その結果 install 後に managed と認識できず uninstall も復元しなかった。挿入位置を **file 先頭 (BOM があればその直後) 固定**に変更し、常に行頭へ `block + 改行1つ` だけを足す形にした。uninstall は同じ範囲を取り除くだけなので、末尾改行の有無に関わらず **byte 一致で往復**する。top-level 挿入なので「最初の table header より前」も満たす (parse 後の `notify` / 既存 key / table も維持されることをテスト)。 |
+| 2 | **妥当・修正** | marker 文字列の存在だけで managed block と認定していたため、利用者のコメントが marker と一致すると間の行を削除し重複 notify (不正 TOML) を作っていた。`findManagedBlock` を追加し、**marker 対の対応に加えて中身の形**(任意の `# previous-notify:` 1 行 + `notify = [...]` 1 行のみ) を検証する。marker が片方だけ / block の外にも出現 / block 内に他の行がある場合は `corrupt` とし、doctor は ready にせず install・repair・uninstall すべてが `INVALID_AGENT_CONFIG` で**無変更**。 |
+| 3 | **妥当・修正** | `readChainArgv` が「`--chain` なし」と「不正 JSON」をともに null にしていた。戻り値を `{kind:'none'|'ok'|'invalid'}` の型へ変更し、`invalid` (値なし / JSON 不正 / string 配列でない) は `corrupt` として全 mode 無変更にした。「`--chain` も退避も無い」だけが正常な chain なし状態として `managed` になる。 |
+| 4 | **環境依存だが対処** | 当環境では 2 回とも正常終了 (exit 0 / node プロセス数 5→5) で再現しないが、環境非依存の終了経路にした。(a) Playwright の `webServer` を `npm start` から `node dist/server/index.js` の直接起動へ変更 (signal を飲む shim を挟まない)。(b) server に `TRACKER_PARENT_PID` watchdog を追加し、signal が届かなくても親プロセスの消滅を 1 秒間隔で検知して同じ shutdown 経路で終了する (env 未指定なら監視しない)。`npm run test:all` は exit 0 / 50 秒 / node プロセス数不変で完走。 |
+
+副次修正: `test:all` の並列実行下で `registration-retry.test.ts` の 1 件が既定 5 秒の timeout を
+超えて落ちることがあった (fake gh の read retry 1 秒 × 複数回)。実挙動は正しいので、当該 file の
+testTimeout を 30 秒へ引き上げた。単独実行・test:all とも 321 件 pass。
+
+追加回帰テスト (unit +12 件、agent-integration は計 49 件):
+末尾改行なし 5 パターンの install→uninstall 全体 byte 一致 / table 付き config の parse 維持 /
+marker と同じコメントを持つ config で全 mode 無変更 / 片側 marker のみで全 mode 無変更 /
+block 内に利用者行がある場合の全 mode 無変更 / 不正 JSON の `--chain` で全 mode 無変更 /
+値なし `--chain` で全 mode 無変更 / chain なし block は managed のまま。
+
+検証: `npm run test:all` (lint / typecheck / unit+integration 321 件 / build / e2e 33 件) exit 0、
+`npm run verify:secrets` hit 0 件、`npm run real:codex-detection` PASS
+(実 config の copy に対する install→doctor→repair→uninstall が byte 一致復元、実 file は未変更)。
+DESIGN.md は revision 2.4 (D028 追加) へ更新。
