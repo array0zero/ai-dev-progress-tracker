@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { runAgentEvent } from '../../src/cli/commands/agent-event.js'
@@ -41,6 +42,8 @@ describe('agent event detection', () => {
   const options = (overrides: Record<string, unknown> = {}) => ({
     config,
     db: ctx.db,
+    // 検知の仕組みを見るテストなので temp folder を許可する (production は除外)。
+    allowExcludedPaths: true,
     ensureServer: async () => true,
     openUrl: async (url: string) => {
       opened.push(url)
@@ -278,6 +281,7 @@ describe('Codex notify chain (DESIGN v2.2 D006)', () => {
   const options = (overrides: Record<string, unknown> = {}) => ({
     config,
     db: ctx.db,
+    allowExcludedPaths: true,
     ensureServer: async () => true,
     openUrl: async () => true,
     ...overrides,
@@ -389,7 +393,12 @@ describe('Codex notify chain (DESIGN v2.2 D006)', () => {
             payload: codexEvent(folder.root),
             chain: JSON.stringify(chainScript(marker, 0)),
           },
-          { config: brokenConfig, ensureServer: async () => true, openUrl: async () => true },
+          {
+            config: brokenConfig,
+            allowExcludedPaths: true,
+            ensureServer: async () => true,
+            openUrl: async () => true,
+          },
         ),
       ).toBe(0)
 
@@ -442,5 +451,62 @@ describe('Codex notify chain (DESIGN v2.2 D006)', () => {
     )
     expect(dispatched).toEqual([])
     expect(listCandidates(ctx.db)).toHaveLength(1)
+  })
+})
+
+describe('excluded paths', () => {
+  let ctx: TestDb
+  let config: AppConfig
+  let dataDir: TempDir
+
+  beforeEach(() => {
+    ctx = createTestDb()
+    dataDir = createTempDir()
+    config = loadConfig({ TRACKER_DATA_DIR: dataDir.root, TRACKER_PORT: '4318' })
+  })
+
+  afterEach(() => {
+    ctx.cleanup()
+    dataDir.cleanup()
+  })
+
+  const base = {
+    ensureServer: async () => true,
+    openUrl: async () => true,
+  }
+
+  it('ignores an event fired from the OS temp directory', async () => {
+    // 実機テストが作った `…/Temp/adpt-codex-*` が未登録候補に並んだ回帰。
+    const temp = createTempDir()
+    try {
+      const code = await runAgentEvent(
+        { agent: 'codex', input: 'argv', payload: codexEvent(temp.root) },
+        { config, db: ctx.db, ...base },
+      )
+      expect(code).toBe(0)
+      expect(listCandidates(ctx.db)).toEqual([])
+    } finally {
+      temp.cleanup()
+    }
+  })
+
+  it('ignores an event fired from the home directory itself', async () => {
+    const code = await runAgentEvent(
+      { agent: 'claude', input: 'stdin', payload: claudeEvent(homedir()) },
+      { config, db: ctx.db, ...base },
+    )
+    expect(code).toBe(0)
+    expect(listCandidates(ctx.db)).toEqual([])
+  })
+
+  it('still records a candidate for a normal project folder', async () => {
+    const code = await runAgentEvent(
+      { agent: 'codex', input: 'argv', payload: codexEvent(process.cwd()) },
+      { config, db: ctx.db, ...base },
+    )
+    expect(code).toBe(0)
+    expect(listCandidates(ctx.db).map((candidate) => candidate.localPath)).toEqual([
+      realpathSync.native(process.cwd()),
+    ])
   })
 })

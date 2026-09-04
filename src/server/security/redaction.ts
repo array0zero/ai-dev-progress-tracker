@@ -102,3 +102,59 @@ export function redactHighConfidenceSecrets(text: string): string {
 export function containsHighConfidenceSecret(text: string): boolean {
   return redactHighConfidenceSecrets(text) !== text
 }
+
+/** 検出パターンの種別。本文は持たない (log / error message へ出せる情報だけ)。 */
+export type SecretPatternName =
+  | 'github_token'
+  | 'github_pat'
+  | 'anthropic_key'
+  | 'openai_key'
+  | 'aws_access_key_id'
+  | 'pem_private_key'
+  | 'url_credential'
+  | 'url_query_secret'
+  | 'key_value'
+
+const NAMED_PATTERNS: ReadonlyArray<{ name: SecretPatternName; pattern: RegExp }> = [
+  { name: 'github_token', pattern: /gh[pousr]_[A-Za-z0-9]{20,255}/ },
+  { name: 'github_pat', pattern: /github_pat_[A-Za-z0-9_]{20,255}/ },
+  { name: 'anthropic_key', pattern: /sk-ant-[A-Za-z0-9_-]{16,255}/ },
+  { name: 'openai_key', pattern: /sk-[A-Za-z0-9_-]{16,255}/ },
+  { name: 'aws_access_key_id', pattern: /AKIA[0-9A-Z]{16}/ },
+  {
+    name: 'pem_private_key',
+    pattern:
+      /-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY-----[\s\S]{0,8192}?-----END [A-Z0-9 ]{0,40}PRIVATE KEY-----/,
+  },
+  {
+    name: 'url_credential',
+    pattern: /\b[a-z][a-z0-9+.-]{1,15}:\/\/[^/\s:@]{1,256}:[^/\s@]{1,256}@/i,
+  },
+  {
+    name: 'url_query_secret',
+    pattern: new RegExp(`[?&](?:${KV_SECRET_NAMES})=[^&\\s]{1,512}`, 'i'),
+  },
+  {
+    name: 'key_value',
+    pattern: new RegExp(
+      `\\b(?:${KV_SECRET_NAMES})\\b["']?\\s{0,4}[:=]\\s{0,4}["']?[^\\s"',;}&]{1,512}`,
+      'i',
+    ),
+  },
+]
+
+/**
+ * 最初に一致した pattern 種別を返す。値そのものは返さない。
+ * 判定は `containsHighConfidenceSecret` と同じ集合を使う。
+ */
+export function findHighConfidenceSecret(text: string): SecretPatternName | null {
+  if (!containsHighConfidenceSecret(text)) {
+    return null
+  }
+  for (const { name, pattern } of NAMED_PATTERNS) {
+    if (pattern.test(text)) {
+      return name
+    }
+  }
+  return 'key_value'
+}

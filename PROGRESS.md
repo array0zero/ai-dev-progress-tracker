@@ -198,3 +198,75 @@ dist 鮮度 assert (`verifies the built entry against the current source`)。
 `npm run real:codex-detection` PASS (実 config copy の install→doctor→repair→uninstall が
 byte 一致復元、実 file は未変更)。DESIGN.md は revision 2.7 (D031 追加、条件 2 を行単位検証へ
 書き換え、E2E server 終了節へ dist 鮮度の要件を追記) へ更新。
+
+
+## 実運用障害3件への対応 (2026-09-04, DESIGN.md revision 2.8)
+
+### 1. backup が SECRET_DETECTED で失敗 (最優先) — 修正
+
+原因: `createBackupExport` の secret gate が **export の serialize 済み JSON 全文**を走査していた。
+実データ (evidence.payload_json / commit `"docs: …"` の patch) に
+`-- secret:` で終わる行があり、次行が既に `[REDACTED]` 済みだった。JSON へ serialize すると
+改行が `\n` の 2 文字になるため、`redactValue` の「値が `[REDACTED]` で始まるなら据え置く」
+ガードが外れ、`secret:\n[REDACTED]` を未 redaction の値と誤認していた。
+v2 で追加した registration_candidates / agent 由来データは無関係 (実 DB で確認)。
+2026-09-02 10:05 以降に該当 commit の evidence が入ったため、それ以降の 2 回が失敗した。
+
+修正: 走査単位を **列の値** に変更 (`scanExportForSecrets`)。JSON を持つ列は parse して
+string leaf ごとに判定する。検出結果は `{ table, column, pattern }` のみを返し、
+`backup_runs.error_message` は
+`A secret-like value was detected in <table>.<column> (pattern: <pattern>); backup was not pushed.`
+とした (本文・offset は保持しない)。`findHighConfidenceSecret` を redaction.ts へ追加。
+
+実 DB 確認: `scanExportForSecrets` = null、`createBackupExport.ok` = true
+(counts: projects 5 / commits 53 / evidence 52 / generationRuns 54 / runEvidence 54 /
+progressSnapshots 50 / registrationCandidates 4)。
+
+### 2. temp ディレクトリ配下が未登録候補に出る — 修正
+
+`isExcludedProjectPath` を agent-event に追加し、OS temp 配下・home 自身・filesystem root は
+candidate を作らず exit 0。既存の誤検出は `node dist/cli/index.js prune-candidates`
+(`--dry-run` あり) で整理する。`registered` candidate は対象外。
+実機検知 task (T009/T010) と検知テストだけ `TRACKER_ALLOW_TEMP_CANDIDATES=1` / 呼出し option で
+除外を無効化する (production 経路では使わない)。
+
+### 3. CODEX_TIMEOUT / GENERATION_NOT_SETTLED — 修正
+
+再現性の確認 (実 DB): 通常の generation は start→finish 12〜22 秒。
+2026-09-03T12:23:49 の run だけ **855.6 秒** 後に CODEX_TIMEOUT を記録している (timeout 値は 120 秒)。
+12:26 の backup が GENERATION_NOT_SETTLED になったのは、この run が 180 秒の settle 待ちの間に
+terminal にならなかったため。つまり timeout 値ではなく **timeout 後に確定しないこと**が原因。
+
+原因: `.cmd` shim 経由の起動 (Windows) で child (cmd.exe) だけを kill すると実体が生き残り、
+継承した stdout/stderr pipe が閉じないため `close` が発火しない。
+最小再現: temp の `hang.cmd` が node を起動する形で `runProcess(timeoutMs: 2000)` →
+修正前は 20 秒待っても解決しない。修正後は 2.3〜4.4 秒で `timedOut: true`。
+
+修正: (1) Windows は shim を kill する前に `taskkill /pid <pid> /t /f` で子孫ごと停止する
+(先に shim を kill すると実体が orphan になり `/t` が辿れず、実測で node が残留した)。
+他 OS は `kill()` → `SIGKILL`。(2) それでも `close` が来なければ `KILL_GRACE_MS` (2 秒) 後に
+`timedOut: true` で強制的に解決する。timeout 値・retry 回数・backup の settle 待ちは変更しない。
+
+### 追加回帰テスト (unit+integration 352 → 366 件)
+
+- `tests/unit/redaction.test.ts`: 改行後の `[REDACTED]` を再検知しない / 同じ文字列を
+  serialize すると検知する (= decode してから走査する必要がある) / pattern 種別の命名。
+- `tests/unit/backup-export.test.ts`: 実障害の payload 形が通る / JSON 内の実 secret は
+  table・column・pattern 付きで検出 / v2 列 (projects.summary) / registration_candidates 列。
+- `tests/integration/backup-flow.test.ts`: 失敗 run の error_message が位置と種別を含み
+  secret 本文を含まない、push しない。
+- `tests/unit/prune-candidates.test.ts`: temp 配下・home・root の除外、兄弟 path の非除外、
+  prunable 選定 (excluded_path / missing_path)、registered は対象外、`--dry-run` は削除しない。
+- `tests/integration/agent-detection.test.ts`: temp / home からの event で candidate を作らない、
+  通常フォルダでは従来どおり作る。
+- `tests/unit/process-runner.test.ts`: shim を経由して実体が生き残る形でも
+  `timeout + grace` 内で `timedOut` として確定する / 正常終了は timeout 扱いにしない。
+- `tests/integration/project-registration.test.ts`: home directory を承認しても
+  `NOT_GIT_ROOT` で拒否し、`~/.git` を作らない。
+
+その他:
+- E2E の port を既定 4317 から専用 4327 (`E2E_PORT` で上書き可) へ変更した。
+  利用者の常駐 server が 4317 を使っていると `npm run test:all` の E2E が起動できないため。
+- 検証: `npm run lint` / `npm run typecheck` clean、`npm test` 373 件、`npm run test:e2e` 33 件、
+  `npm run verify:secrets` hit 0 件。実 DB (read-only) で `scanExportForSecrets` = null、
+  `createBackupExport.ok` = true、`prune-candidates` 対象は temp candidate 1 件のみ。

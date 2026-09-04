@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
@@ -176,6 +176,20 @@ describe('automatic registration state machine', () => {
     fake.cleanup()
     rmSync(remoteDir, { recursive: true, force: true })
     ctx.cleanup()
+  })
+
+  it('refuses to register the home directory and leaves it untouched', async () => {
+    // 誤検出 candidate をそのまま承認して home に `git init` されるのを防ぐ。
+    const candidateId = approve(homedir(), 'Home')
+    const gitDirExisted = existsSync(join(homedir(), '.git'))
+
+    const result = await runRegistration(ctx.db, candidateId, {
+      autoRecover: false,
+      autoBackup: false,
+    })
+
+    expect(result).toMatchObject({ ok: false, code: 'NOT_GIT_ROOT' })
+    expect(existsSync(join(homedir(), '.git'))).toBe(gitDirExisted)
   })
 
   it('initializes Git, creates a private repo and registers a folder with no commits', async () => {

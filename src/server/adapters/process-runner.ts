@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { delimiter, extname, isAbsolute } from 'node:path'
 
@@ -121,6 +121,47 @@ export function buildSpawnSpec(command: string, args: readonly string[]): SpawnS
  * Windows の .cmd / .bat shim は %ComSpec% /d /s /c 経由で起動する (それでも shell:false)。
  * timeout到達時はchild processをkillし、`timedOut: true` で解決する。
  */
+/**
+ * timeout 到達時の停止手順。
+ * Windows では `.cmd` shim を経由して起動するため、child (cmd.exe) を kill しても
+ * その先の実体 (codex / node) は生き続け、継承した stdout/stderr pipe も開いたままになる。
+ * すると `close` が発火せず、`runProcess` が timeout 後も解決しない
+ * (運用で CODEX_TIMEOUT が 120 秒ではなく 14 分後に確定した原因)。
+ * そのため (1) process tree ごと停止し、(2) それでも close が来ない場合は
+ * grace 経過後に timedOut として強制的に解決する。
+ */
+export const KILL_GRACE_MS = 2_000
+
+function killProcessTree(child: ReturnType<typeof spawn>): void {
+  const pid = child.pid
+  if (pid !== undefined && process.platform === 'win32') {
+    // taskkill /t は親子関係を辿るので、先に shim を kill すると実体が orphan になり
+    // 取りこぼす。tree が壊れていないうちに子孫ごと落とす。
+    try {
+      execFileSync('taskkill', ['/pid', String(pid), '/t', '/f'], {
+        stdio: 'ignore',
+        timeout: KILL_GRACE_MS,
+      })
+      return
+    } catch {
+      // 既に終了している / taskkill 不可。下の kill へ落とす。
+    }
+  }
+  try {
+    child.kill()
+  } catch {
+    // 既に終了している
+  }
+  if (pid === undefined || process.platform === 'win32') {
+    return
+  }
+  try {
+    child.kill('SIGKILL')
+  } catch {
+    // 既に終了している
+  }
+}
+
 export function runProcess(
   command: string,
   args: readonly string[],
@@ -142,9 +183,36 @@ export function runProcess(
     let timedOut = false
     let settled = false
 
+    const settle = (result: RunResult): void => {
+      if (settled) {
+        return
+      }
+      settled = true
+      clearTimeout(timer)
+      clearTimeout(forceTimer)
+      resolvePromise(result)
+    }
+
+    const snapshot = (code: number | null, signal: NodeJS.Signals | null): RunResult => ({
+      code,
+      signal,
+      stdout: stdout.toString(),
+      stderr: stderr.toString(),
+      timedOut,
+      stdoutTruncated: stdout.truncated,
+      stderrTruncated: stderr.truncated,
+    })
+
+    let forceTimer: NodeJS.Timeout = setTimeout(() => undefined, 0)
+    clearTimeout(forceTimer)
+
     const timer = setTimeout(() => {
       timedOut = true
-      child.kill()
+      killProcessTree(child)
+      // kill しても pipe が閉じない (孫プロセスが握っている) 場合に備え、
+      // grace 経過後は timedOut として強制的に解決する。
+      forceTimer = setTimeout(() => settle(snapshot(null, null)), KILL_GRACE_MS)
+      forceTimer.unref()
     }, options.timeoutMs)
     timer.unref()
 
@@ -157,24 +225,12 @@ export function runProcess(
       }
       settled = true
       clearTimeout(timer)
+      clearTimeout(forceTimer)
       rejectPromise(error)
     })
 
     child.on('close', (code, signal) => {
-      if (settled) {
-        return
-      }
-      settled = true
-      clearTimeout(timer)
-      resolvePromise({
-        code,
-        signal,
-        stdout: stdout.toString(),
-        stderr: stderr.toString(),
-        timedOut,
-        stdoutTruncated: stdout.truncated,
-        stderrTruncated: stderr.truncated,
-      })
+      settle(snapshot(code, signal))
     })
 
     if (options.input !== undefined) {

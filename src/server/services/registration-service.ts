@@ -1,7 +1,8 @@
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { homedir } from 'node:os'
+import { join, parse } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   describeLocalRepository,
@@ -148,6 +149,13 @@ export async function runRegistration(
     }
   }
   const root = state.root
+  // home そのもの / filesystem root を project root にしない。
+  // (temp 配下は実機テストで使うので許可する)
+  const sameDir = (a: string, b: string): boolean =>
+    process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b
+  if (sameDir(root, homedir()) || sameDir(root, parse(root).root)) {
+    return fail('NOT_GIT_ROOT')
+  }
   if (state.gitDir === null || state.gitDir !== join(root, '.git')) {
     return fail('GIT_LAYOUT_UNSUPPORTED')
   }

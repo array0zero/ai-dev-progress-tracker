@@ -132,6 +132,7 @@ async function main(): Promise<number> {
           TRACKER_DATA_DIR: dataDir,
           TRACKER_PORT: '4319',
           TRACKER_AGENT_EVENT_PROMPT: 'off',
+          TRACKER_ALLOW_TEMP_CANDIDATES: '1',
         },
         timeoutMs: PROMPT_TIMEOUT_MS,
       },

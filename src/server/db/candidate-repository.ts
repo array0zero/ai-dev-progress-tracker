@@ -200,3 +200,12 @@ export function reopenCandidate(db: Db, id: string): boolean {
       .run(id).changes === 1
   )
 }
+
+/** 誤検出 candidate の整理用。registered は project と紐づくので消さない。 */
+export function deleteCandidate(db: Db, id: string): boolean {
+  return (
+    db
+      .prepare("DELETE FROM registration_candidates WHERE id = ? AND status != 'registered'")
+      .run(id).changes === 1
+  )
+}

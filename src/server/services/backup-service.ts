@@ -28,7 +28,7 @@ import {
   type BackupManifestV2,
   backupDataFileName,
 } from '../schemas/backup.js'
-import { containsHighConfidenceSecret } from '../security/redaction.js'
+import { findHighConfidenceSecret, type SecretPatternName } from '../security/redaction.js'
 
 export const BACKUP_REPO_SUFFIX = 'ai-dev-progress-tracker-backup'
 export const BACKUP_SCOPE = 'backup'
@@ -91,14 +91,85 @@ export type BackupExportResult =
       manifest: BackupManifestV2
       counts: BackupCountsV2
     }
-  | { ok: false; code: 'SECRET_DETECTED' }
+  | { ok: false; code: 'SECRET_DETECTED'; finding: SecretFinding }
+
+/** 検出位置 (テーブル・カラム・パターン種別)。秘密情報の本文は持たない。 */
+export interface SecretFinding {
+  table: string
+  column: string
+  pattern: SecretPatternName
+}
+
+/** JSON 文字列なら中の文字列 leaf を、そうでなければ自身を返す。 */
+function stringLeaves(value: string): string[] {
+  const trimmed = value.trim()
+  if (trimmed === '' || !(trimmed.startsWith('{') || trimmed.startsWith('['))) {
+    return [value]
+  }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(trimmed)
+  } catch {
+    return [value]
+  }
+  const leaves: string[] = []
+  const walk = (node: unknown): void => {
+    if (typeof node === 'string') {
+      leaves.push(node)
+      return
+    }
+    if (Array.isArray(node)) {
+      for (const item of node) {
+        walk(item)
+      }
+      return
+    }
+    if (node !== null && typeof node === 'object') {
+      for (const item of Object.values(node)) {
+        walk(item)
+      }
+    }
+  }
+  walk(parsed)
+  return leaves.length === 0 ? [value] : leaves
+}
+
+/**
+ * backup 対象の**値そのもの**を走査する。
+ * serialize 済み JSON 文字列を直接見ると、escape された改行 (`\n`) が空白でなくなるため
+ * `token:` のような散文が key-value pattern に誤検知される。よって JSON 列は
+ * decode してから文字列 leaf 単位で判定する。
+ */
+export function scanExportForSecrets(db: Db): SecretFinding | null {
+  for (const { table, columns } of BACKUP_TABLES_V2) {
+    const rows = db.prepare(`SELECT ${columns.join(', ')} FROM ${table}`).all() as Array<
+      Record<string, unknown>
+    >
+    for (const row of rows) {
+      for (const column of columns) {
+        const value = row[column]
+        if (typeof value !== 'string') {
+          continue
+        }
+        for (const leaf of stringLeaves(value)) {
+          const pattern = findHighConfidenceSecret(leaf)
+          if (pattern !== null) {
+            return { table, column, pattern }
+          }
+        }
+      }
+    }
+  }
+  return null
+}
 
 /** DB から backup export 一式を作る。export 文字列へ high-confidence scanner を再適用する。 */
 export function createBackupExport(db: Db, now: Date = new Date()): BackupExportResult {
-  const { dataJson, counts } = exportBackupData(db)
-  if (containsHighConfidenceSecret(dataJson)) {
-    return { ok: false, code: 'SECRET_DETECTED' }
+  const finding = scanExportForSecrets(db)
+  if (finding !== null) {
+    return { ok: false, code: 'SECRET_DETECTED', finding }
   }
+  const { dataJson, counts } = exportBackupData(db)
   const { manifest, manifestJson } = buildBackupManifest(dataJson, counts, now)
   return { ok: true, dataJson, manifestJson, manifest, counts }
 }
@@ -425,7 +496,12 @@ export async function runBackup(
 
   const exported = createBackupExport(db, now())
   if (!exported.ok) {
-    fail('SECRET_DETECTED', 'A secret-like value was detected; backup was not pushed.')
+    // 秘密情報の本文は残さず、調査に必要な位置と種別だけを記録する。
+    const { table, column, pattern } = exported.finding
+    fail(
+      'SECRET_DETECTED',
+      `A secret-like value was detected in ${table}.${column} (pattern: ${pattern}); backup was not pushed.`,
+    )
     return
   }
 

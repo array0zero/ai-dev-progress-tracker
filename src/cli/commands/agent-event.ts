@@ -1,5 +1,6 @@
 import { realpathSync, statSync } from 'node:fs'
-import { basename, isAbsolute } from 'node:path'
+import { homedir, tmpdir } from 'node:os'
+import { basename, isAbsolute, parse, resolve, sep } from 'node:path'
 import {
   isServerHealthy,
   openUrl,
@@ -31,6 +32,11 @@ export interface AgentEventArgs {
 
 export interface AgentEventOptions {
   config?: AppConfig
+  /**
+   * temp / home の除外を無効にする。実機 script と検知テストが temp folder を
+   * 使うための seam。production では使わない (env `TRACKER_ALLOW_TEMP_CANDIDATES=1` も同じ)。
+   */
+  allowExcludedPaths?: boolean
   /** テスト用 seam。chain 対象の起動を差し替える。 */
   spawnChain?: (command: string, args: readonly string[]) => boolean
   db?: Db
@@ -88,6 +94,28 @@ function runChainedNotify(
   }
   const started = spawnChain(command, payload === '' ? rest : [...rest, payload])
   logger.info('chained notify dispatched', { chained_started: started })
+}
+
+/**
+ * candidate にしない path。
+ * - OS temp 配下: 実機テストやツールが作る一時フォルダ (運用で誤検出が出た)
+ * - home directory そのもの / filesystem root: project ではない
+ * 判定は canonical path 同士で行い、Windows は case-insensitive。
+ */
+export function isExcludedProjectPath(candidatePath: string): boolean {
+  const target = normalizeForCompare(candidatePath)
+  const home = normalizeForCompare(homedir())
+  const temp = normalizeForCompare(tmpdir())
+
+  if (target === home || target === normalizeForCompare(parse(candidatePath).root)) {
+    return true
+  }
+  return target === temp || target.startsWith(`${temp}${sep}`)
+}
+
+function normalizeForCompare(value: string): string {
+  const resolved = resolve(value)
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved
 }
 
 /** event payload からは event 種別と cwd だけを取り出す。会話本文は読まない。 */
@@ -197,6 +225,14 @@ export async function runAgentEvent(
     const localPath = await canonicalizeWorkdir(cwd, remainingForGit)
     if (localPath === null) {
       logger.warn('agent event has an unusable cwd', { agent: args.agent })
+      return 0
+    }
+
+    // OS temp 配下や home そのものは project ではない。candidate を作らない。
+    const allowExcluded =
+      options.allowExcludedPaths === true || process.env.TRACKER_ALLOW_TEMP_CANDIDATES === '1'
+    if (!allowExcluded && isExcludedProjectPath(localPath)) {
+      logger.info('agent event ignored an excluded path', { agent: args.agent })
       return 0
     }
 

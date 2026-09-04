@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   containsHighConfidenceSecret,
+  findHighConfidenceSecret,
   isSecretKey,
   REDACTED,
   redactHighConfidenceSecrets,
@@ -90,5 +91,30 @@ describe('high-confidence scanner (negative gate)', () => {
     const text = ['feat(dashboard): 8件を1画面へ並べる', 'refs #123'].join(NL)
     expect(containsHighConfidenceSecret(text)).toBe(false)
     expect(redactHighConfidenceSecrets(text)).toBe(text)
+  })
+})
+
+describe('secret detection over serialized JSON (production incident)', () => {
+  // 実運用で backup が SECRET_DETECTED で止まった形。evidence.payload_json の中では
+  // 改行が `\n` の 2 文字になるため、redaction marker の直前に非空白が入り、
+  // 「既に redaction 済み」ガードが効かなくなっていた。
+  const decoded = '-- secret:\n[REDACTED]  - sentinel secrets をprocessへ渡す\n'
+
+  it('treats a redacted value that follows a line break as already redacted', () => {
+    expect(containsHighConfidenceSecret(decoded)).toBe(false)
+  })
+
+  it('flags the same text once it is serialized, which is why scanning must decode first', () => {
+    expect(containsHighConfidenceSecret(JSON.stringify({ patch: decoded }))).toBe(true)
+  })
+
+  it('names the pattern kind without returning the value', () => {
+    expect(findHighConfidenceSecret('token ghp_0123456789abcdefghijABCDEFGHIJKL')).toBe(
+      'github_token',
+    )
+    expect(findHighConfidenceSecret('AKIA0123456789ABCDEF')).toBe('aws_access_key_id')
+    expect(findHighConfidenceSecret('https://user:pw0rd@example.com/x')).toBe('url_credential')
+    expect(findHighConfidenceSecret('password=hunter2')).toBe('key_value')
+    expect(findHighConfidenceSecret('nothing to see')).toBeNull()
   })
 })

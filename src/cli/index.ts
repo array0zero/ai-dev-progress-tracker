@@ -3,6 +3,7 @@ import { type AgentEventArgs, runAgentEvent } from './commands/agent-event.js'
 import { runDoctor } from './commands/doctor.js'
 import { runHookBackup } from './commands/hook-backup.js'
 import { type HookCommitArgs, runHookCommit } from './commands/hook-commit.js'
+import { runPruneCandidates } from './commands/prune-candidates.js'
 import { runRestore } from './commands/restore.js'
 import { runSetupAgents } from './commands/setup-agents.js'
 
@@ -77,6 +78,14 @@ async function dispatch(argv: readonly string[]): Promise<number> {
         repair: values.repair === true,
         uninstall: values.uninstall === true,
       })
+    }
+    case 'prune-candidates': {
+      const { values } = parseArgs({
+        args: [...rest],
+        options: { 'dry-run': { type: 'boolean' } },
+        strict: false,
+      })
+      return runPruneCandidates({ dryRun: values['dry-run'] === true })
     }
     case 'restore': {
       const { values } = parseArgs({

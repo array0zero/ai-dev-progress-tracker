@@ -1,15 +1,16 @@
 # DESIGN.md — 設計書
 
 project_id: ai-dev-progress-tracker  
-version: 2.7  
-date: 2026-09-03  
+version: 2.8  
+date: 2026-09-04  
 source: PLAN.md v1.1 + 公開 `ai-dev-progress-tracker` commit `c281f91` / DESIGN.md v1.7 + 2026-09-02実測環境  
 revision 2.2: D006 (Codex notify) を「競合エラー」から「既存notifyを退避してchain」へ変更  
 revision 2.3: D027 追加。chain の退避データ検証・TOML認識の範囲検出・atomic write・byte一致復元を固定  
 revision 2.4: D028 追加。managed block の構造検証・行頭挿入での往復・`--chain`不正の区別・親終了watchdogを固定  
 revision 2.5: D029 追加。block 内 notify の所有権検証・BOM の parse 前除去・watchdog 経路の直接検証を固定  
 revision 2.6: D030 追加。managed block の識別・所有権判定を単一関数の 4 条件へ再設計 (4-2 系を置き換え)  
-revision 2.7: D031 追加。block 本文を行単位で検証 (コメント等の構造外データを検出) し、dist entry のテストは毎回 build する
+revision 2.7: D031 追加。block 本文を行単位で検証 (コメント等の構造外データを検出) し、dist entry のテストは毎回 build する  
+revision 2.8: D032〜D034 追加。実運用障害3件 (backup の secret 誤検知、temp 配下の候補、timeout 未確定) を修正
 
 ## 0. 受入検査・実測環境・v1.3〜v1.7互換インベントリ
 
@@ -756,6 +757,8 @@ node dist/cli/index.js hook-commit --project-id <uuid> --repo <path> --sha <sha>
 node dist/cli/index.js hook-backup --project-id <uuid> --repo <path> --sha <sha>
 node dist/cli/index.js restore
 node dist/cli/index.js restore --force
+node dist/cli/index.js prune-candidates
+node dist/cli/index.js prune-candidates --dry-run
 ```
 
 `agent-event`:
@@ -763,6 +766,19 @@ node dist/cli/index.js restore --force
 - Claude: `hook_event_name=UserPromptSubmit`以外はexit 0/no-op。
 - `cwd`欠落/relative/non-directoryはredacted warning後exit 0。
 - 正常時も5秒以内にexit。GitHub/AI処理を実行しない。
+- 除外path (candidateを作らずexit 0):
+  - OS temp directory (`os.tmpdir()`) そのものとその配下。実機テストやツールの一時フォルダが
+    未登録候補に並ぶため。
+  - home directory そのもの、filesystem root。projectではないため。
+  - 比較は`path.resolve`後、Windowsはcase-insensitive。境界は`sep`単位で判定し、
+    `<temp>-other`のような兄弟pathは除外しない。
+  - 実機検知taskと検知テストだけ `TRACKER_ALLOW_TEMP_CANDIDATES=1` (または呼出しoption)で
+    この除外を無効化する。production経路では使わない。
+
+`prune-candidates`:
+- 既存の誤検出candidateを整理する。対象は`registered`以外で、除外pathか、local pathが存在しないもの。
+- `--dry-run`は一覧だけを表示し削除しない。
+- `registered` candidateはprojectと紐づくため対象にしない。
 
 ### エラーレスポンス共通形式
 
@@ -897,6 +913,16 @@ current/historyは同一DOM sectionへ混在させない。
 | agent-event local processing | 5s total | 次agent event |
 | browser open | 3s | 次agent event |
 
+timeout到達時の停止手順 (`runProcess`):
+1. Windowsは`taskkill /pid <pid> /t /f`で **子孫ごと** 停止する。`.cmd` shim経由の起動では
+   shimを先にkillすると実体がorphanになり`/t`が辿れないため、shimをkillする前に実行する。
+   他OSは`kill()`後に`SIGKILL`。
+2. それでも`close`が来ない場合、`KILL_GRACE_MS`(2秒)経過後に`timedOut: true`で強制的に解決する。
+   実体が継承したstdout/stderr pipeを握ったままだと`close`が発火しないため、
+   timeout値を超えて解決しない状態を作らない。
+3. これにより Codex generation は最悪でも `timeout + grace` で terminal になり、
+   backup の generation待ち (180秒) を巻き込まない。
+
 registration全体retry:
 - attempt1失敗 → redacted error保存 → 2秒待つ。
 - attempt2実行。
@@ -964,6 +990,17 @@ high-confidence pattern:
 - PEM private key
 - `password|token|api_key|secret|client_secret`型key-value
 - URL userinfo/query credential
+
+backup export の走査 (`scanExportForSecrets`):
+- 走査単位は **列の値**。`payload_json` など JSON を持つ列は parse し、string leaf ごとに判定する。
+  serialize 済みの文字列を走査すると、改行が `\n` の 2 文字になるため
+  `secret:` の直後に `\n[REDACTED]` が続く形が「未 redaction の値」に見え、誤検知する。
+- 検出時は `{ table, column, pattern }` だけを返し、値・前後の本文・offset を保持しない。
+  `backup_runs.error_message` は
+  `A secret-like value was detected in <table>.<column> (pattern: <pattern>); backup was not pushed.`
+  とし、秘密情報本文をDB/log/APIへ出さない。
+- pattern種別は上記 high-confidence patternの名前 (`github_token` / `aws_access_key_id` /
+  `url_credential` / `key_value` など) に限る。
 
 ### 環境変数一覧
 
@@ -1153,6 +1190,9 @@ agent-eventがserver未起動なら同じbuildの`dist/server/index.js`をdetach
 | D023 | UI performance | harnessとactual記録を別task | 想定expected禁止 | 事前fixture: 却下 |
 | D024 | real external tests | temp local + dedicated Private fixture repo | fake完結防止とuser data保護 | production repo試験: 却下 |
 | D025 | exact OS/browser未計測 | implementationをblockせずT025で識別情報だけ記録 | viewportは取得済み、追加質問不要 | 推測記載: 却下 |
+| D034 | timeout到達時のprocess停止 | (1) Windowsは shim を kill する前に `taskkill /t /f` で子孫ごと停止する。(2) `close` が来なくても grace 2秒で `timedOut` として強制的に解決する | 実運用で Codex generation が timeout値 120秒ではなく **855秒後** に `CODEX_TIMEOUT` を記録した。`.cmd` shim (cmd.exe) を kill しても実体が生き残り、継承した pipe が閉じないため `close` が発火していなかった。同 generation を待っていた backup が `GENERATION_NOT_SETTLED` になったのも同じ原因。timeout値自体は妥当なので変更しない | timeout値を延ばす: 原因が確定時間ではないため却下。backupのsettle待ち(180秒)を延ばす: 症状の先送りのため却下 (2026-09-04 revision 2.8) |
+| D033 | 候補にしないpath | OS temp配下・home directory自身・filesystem rootは candidate を作らない。既存の誤検出は `prune-candidates` で整理する。実機検知taskと検知テストだけ `TRACKER_ALLOW_TEMP_CANDIDATES=1` で除外を無効化する | 実運用で実機テストが作った `…/Temp/adpt-codex-*` が未登録候補に並んだ。これらは消えるフォルダなので登録対象になり得ない。一方 T009/T010 の実機検知は temp projectで検知そのものを確認する必要があるため、production経路に影響しない seam を用意した | UI側で隠す: DBに残り続けるため却下。temp配下を登録時だけ弾く: 候補一覧が汚れたままなので却下 (2026-09-04 revision 2.8) |
+| D032 | secret走査の単位と記録内容 | 走査は列の値 (JSON列は parse して string leaf) 単位で行い、検出時は `{table, column, pattern}` だけを error_message へ記録する | 実運用で backup が2回連続 `SECRET_DETECTED` で停止した。原因は evidence.payload_json を **serialize したまま** 走査していたことで、`secret:` の直後の改行が `\n` の2文字になり「既にredaction済み」ガードが外れて誤検知していた。また error_message が固定文言のみで、どの行が原因かを調べられなかった | 走査対象からv2列を外す: 検査の穴になるため却下。検出値の一部を error_message に含める: 秘密情報非保存に反するため却下 (2026-09-04 revision 2.8) |
 | D031 | block 本文の行単位検証と dist 鮮度 | (1) block 本文は TOML parse ではなく **行の並び**で検証し、想定外の行 (コメント・空行・行末コメント・2 つめの notify) があれば corrupt。notify 行は正準形と完全一致を要求する。(2) dist entry を検証するテストは毎回 build し、mtime で鮮度も assert する | TOML parse ではコメントが結果から消え、利用者のコメントを「構造外データ」として検出できず uninstall で消していた。また `test:all` は test → build の順なので、古い dist を検証して pass しうる | block 本文を TOML parse だけで検証: 却下。dist の存在確認だけで済ませる: 却下 (2026-09-03 revision 2.7) |
 | D030 | managed block 識別の再設計 | marker 検出・構造検証・所有権判定・top-level 一致確認を `readManagedBlock` 1 関数の 4 条件へ統合し、file 全体の parse 結果を所有権の根拠から外す。marker は行全体一致、argv は node 実行体 + 絶対 `.../cli/index.js` + 固定 subcommand + 末尾 `--chain` のみ、chain 置換は行境界まで広げる | 同一領域で 4 回連続して破壊経路が見つかったため、個別の穴埋めをやめ「どこを見て所有と判断するか」を 1 か所へ集約した。所有権の材料が複数箇所に散っていたことが、top-level notify の取り違え・marker 行末の見落とし・argv 先頭の未検証を同時に生んでいた | 個別条件の追加を続ける: 却下。block へ独自 metadata (checksum 等) を持たせる: 追加状態を増やすため却下 (2026-09-03 revision 2.6) |
 | D029 | block内notifyの所有権とBOM | (1) 構造検証に加え、block内notify argvの形 (cli/index.js + agent-event + --agent codex + --input argv、末尾は `--chain <json>` のみ) で所有権を判定し、tracker以外ならcorruptとして全mode無変更。判定は内容のみでpath非依存。(2) BOMはparse前に切り離し、書き戻し時に復元する。(3) watchdog経路は親をSIGKILLする専用testで直接検証する | 再々レビューで「正しいmarker対の中に利用者のnotifyがあるconfigをstaleと誤認し、uninstallでそのnotifyが消える」「BOM付きconfigがparse前段で INVALID_AGENT_CONFIG になりBOM対応経路へ到達しない」を実再現。marker構造だけでは所有権を保証できないため、tracker自身のhandlerであることまで確認する方針にした | marker構造だけで所有と見なす: 却下。BOMをそのままparserへ渡す: 却下 (2026-09-03 revision 2.5) |

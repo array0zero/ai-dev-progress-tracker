@@ -26,6 +26,9 @@ function stringEnv(source: NodeJS.ProcessEnv): Record<string, string> {
   return out
 }
 
+// 既定 port (4317) は利用者の常駐 server と衝突するため、E2E は専用 port を使う。
+const E2E_PORT = process.env.E2E_PORT ?? '4327'
+
 export default defineConfig({
   testDir: 'tests/e2e',
   fullyParallel: false,
@@ -34,7 +37,7 @@ export default defineConfig({
   workers: 1,
   reporter: 'list',
   use: {
-    baseURL: 'http://127.0.0.1:4317',
+    baseURL: `http://127.0.0.1:${E2E_PORT}`,
     trace: 'on-first-retry',
   },
   projects: [
@@ -46,7 +49,7 @@ export default defineConfig({
   webServer: {
     // npm shim を挟まず node を直接起動する (shim が signal を飲む環境でも確実に終わる)。
     command: 'node dist/server/index.js',
-    url: 'http://127.0.0.1:4317/api/health',
+    url: `http://127.0.0.1:${E2E_PORT}/api/health`,
     reuseExistingServer: false,
     timeout: 120_000,
     env: {
@@ -54,7 +57,7 @@ export default defineConfig({
       TRACKER_DATA_DIR: process.env.E2E_TRACKER_DATA_DIR ?? '',
       // signal が届かない環境でも runner の終了で server が確実に終わる。
       TRACKER_PARENT_PID: String(process.pid),
-      TRACKER_PORT: '4317',
+      TRACKER_PORT: E2E_PORT,
       TRACKER_GH_BIN: process.env.E2E_GH_BIN ?? '',
       TRACKER_GH_ARGS: process.env.E2E_GH_ARGS ?? '',
       FAKE_GH_FIXTURES: process.env.E2E_GH_FIXTURES ?? '',

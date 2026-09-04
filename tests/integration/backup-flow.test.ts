@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -168,6 +169,51 @@ describe('backup flow', () => {
     expect(done?.backupCommitSha).toBe('NEW_SHA_BBBB')
     expect(calls).toContain('clone')
     expect(calls).toContain('commitPush')
+  })
+
+  it('names the location of a detected secret and pushes nothing', async () => {
+    const projectId = await register(ctx.db, { autoBackup: false })
+    const headSha = repo.git('rev-parse', 'HEAD')
+    const secret = 'ghp_0123456789abcdefghijABCDEFGHIJKL'
+    ctx.db
+      .prepare(
+        `INSERT INTO evidence (id, project_id, kind, external_key, source_version, title, url, payload_json, captured_at)
+         VALUES (?, ?, 'commit', 'aaaaaaa', ?, 'leak', null, ?, '2026-09-02T00:00:00.000Z')`,
+      )
+      .run(
+        randomUUID(),
+        projectId,
+        headSha,
+        JSON.stringify({ sha: headSha, patch: `token ${secret}` }),
+      )
+    const enq = enqueueBackup(ctx.db, {
+      trigger: 'manual',
+      projectId,
+      sourceCommitSha: headSha,
+      backupRepo: 'fake-user/ai-dev-progress-tracker-backup',
+    })
+    const run = getBackupRunById(ctx.db, enq.runId)
+    if (run === null) {
+      throw new Error('run missing')
+    }
+    const { deps, calls } = fakeGitDeps()
+
+    await runBackup(ctx.db, run, {
+      cloneDir,
+      settleTimeoutMs: 500,
+      settlePollMs: 20,
+      ensureRepo: OK_ENSURE,
+      git: deps,
+    })
+
+    const done = getBackupRunById(ctx.db, run.id)
+    expect(done?.status).toBe('failed')
+    expect(done?.errorCode).toBe('SECRET_DETECTED')
+    // 調査に必要な位置と種別だけを残し、本文は残さない。
+    expect(done?.errorMessage).toContain('evidence.payload_json')
+    expect(done?.errorMessage).toContain('github_token')
+    expect(done?.errorMessage).not.toContain(secret)
+    expect(calls).not.toContain('commitPush')
   })
 
   it('performs the first backup against an empty backup repo without pulling', async () => {
